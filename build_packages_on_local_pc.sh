@@ -148,11 +148,11 @@ else
 fi
 
 # Add CYCLONEDDS_URI (commented out by default - uncomment and edit cyclonedds.xml to use)
-if ! grep -qF "CYCLONE_DDS_URI" "${BASHRC}" 2>/dev/null; then
-    echo "# export CYCLONE_DDS_URI=file://${SCRIPT_DIR}/cyclonedds.xml" >> "${BASHRC}"
-    echo "  Added CYCLONE_DDS_URI (commented) to ~/.bashrc"
+if ! grep -qF "CYCLONEDDS_URI" "${BASHRC}" 2>/dev/null; then
+    echo "# export CYCLONEDDS_URI=file://${SCRIPT_DIR}/cyclonedds.xml" >> "${BASHRC}"
+    echo "  Added CYCLONEDDS_URI (commented) to ~/.bashrc"
 else
-    echo "  CYCLONE_DDS_URI already in ~/.bashrc, skipping."
+    echo "  CYCLONEDDS_URI already in ~/.bashrc, skipping."
 fi
 
 ALIASES=(
