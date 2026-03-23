@@ -29,6 +29,7 @@ class SimpleMuxNode(Node):
         self.declare_parameter('steering_angle_to_servo_offset', 0.5)
         self.declare_parameter('steering_angle_to_servo_gain',  -1.2135)
         self.declare_parameter('use_estop',  False)
+        self.declare_parameter('sim',  False)
         p = lambda name: self.get_parameter(name).value
 
         out_topic  = p('out_topic')
@@ -50,7 +51,7 @@ class SimpleMuxNode(Node):
         )
         
 
-        self.current_host = 'autodrive'
+        self.current_host = 'autodrive' if p('sim') else None
         self.human_drive  = None
         self.autodrive    = None
         self.scan         = None

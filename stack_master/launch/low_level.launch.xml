@@ -61,6 +61,7 @@
     <param name="out_topic"     value="/vesc/ackermann_cmd"/>
     <param name="joy_max_speed" value="7.0"/>
     <param name="use_estop" value="$(var use_estop)"/>
+    <param name="sim" value="$(var sim)"/>
   </node>
 
 </launch>
