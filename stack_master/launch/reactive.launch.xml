@@ -3,7 +3,7 @@
     reactive.launch.xml
     ====================
     Run AFTER:
-      ros2 launch stack_master middle_level.launch.xml sim:=true map:=f localization:=true
+      ros2 launch stack_master low_level.launch.xml sim:=true map:=f
 
     Usage:
       ros2 launch stack_master reactive.launch.xml mode:=gap_follow
