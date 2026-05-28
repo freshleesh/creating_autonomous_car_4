@@ -50,7 +50,6 @@ class PPNode(Node):
     def _wp_cb(self, msg):   self.waypoints = msg.wpnts
 
     def _publish_lookahead(self, wp):
-        self.get_logger().info('Pub way')
         """Publish the chosen lookahead waypoint as a green sphere in RViz (frame=map)."""
         m = Marker()
         m.header.stamp = self.get_clock().now().to_msg()
@@ -68,9 +67,7 @@ class PPNode(Node):
         self.lookahead_pub.publish(m)
 
     def _loop(self):
-        self.get_logger().info('loop')
         if self.odom is None or not self.waypoints:
-            self.get_logger().info('PPNode not ready')
             return
 
         steer, speed = self._compute()
@@ -84,7 +81,6 @@ class PPNode(Node):
         self.drive_pub.publish(msg)
 
     def _compute(self):
-        # self.get_logger().info('compute ready')
         # TODO: Pure Pursuit algorithm
         # inputs : self.odom, self.waypoints, self.lookahead, self.wheelbase
         # output : (steering [rad], speed [m/s])
@@ -115,90 +111,11 @@ class PPNode(Node):
         #       (or average a few waypoints around the lookahead)
         #     - if vx is 0 or negative, fall back to a sane default (e.g. 1.5 m/s)
 
-        # --- Step 1. pose ---------------------------------------------------
-        p = self.odom.pose.pose.position
-        q = self.odom.pose.pose.orientation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        #TODO
 
-        # Current forward speed (used to scale the lookahead).
-        v_now = float(self.odom.twist.twist.linear.x)
+        raise NotImplementedError('PPNode._compute is not implemented yet')
 
-        # Speed-adaptive lookahead: short in slow corners (sharp tracking),
-        # long on fast straights (smooth, less wobble) — slide 9 tradeoff.
-        L_d = self.lookahead + 0.30 * max(0.0, v_now)
-        L_d = max(0.6, min(4.5, L_d))
-
-        # --- Step 2. lookahead point ---------------------------------------
-        wp_xy = np.array([(w.x_m, w.y_m) for w in self.waypoints])
-        # self.get_logger().info(wp_xy)
-        c, s = math.cos(yaw), math.sin(yaw)
-        dx = wp_xy[:, 0] - p.x
-        dy = wp_xy[:, 1] - p.y
-        local_x =  c * dx + s * dy
-        local_y = -s * dx + c * dy
-        ahead = local_x > 0.0
-        if not np.any(ahead):
-            self.get_logger().info('fail')
-            return 0.0, 0.0
-
-        # Curvature-adaptive lookahead: shorten L_d if a sharp corner is
-        # imminent (precise tracking), leave it long on straights (smooth).
-        # Average |kappa| over the next 8 waypoints (~2 m) is the indicator.
-        closest_idx = int(np.argmin(np.hypot(dx, dy)))
-        N_wp_total  = len(self.waypoints)
-        kappa_ahead = 0.0
-        for k in range(8):
-            kappa_ahead += abs(float(getattr(
-                self.waypoints[(closest_idx + k) % N_wp_total],
-                'kappa_radpm', 0.0)))
-        kappa_ahead /= 8.0
-        L_d = L_d / (1.0 + 2.5 * kappa_ahead)
-
-        err = np.abs(np.hypot(dx, dy) - L_d)
-        err[~ahead] = np.inf
-        target_idx = int(np.argmin(err))
-        self._publish_lookahead(self.waypoints[target_idx])
-
-        # --- Step 3. curvature → steering ----------------------------------
-        lx = local_x[target_idx]
-        ly = local_y[target_idx]
-        L_f_sq = lx * lx + ly * ly
-        if L_f_sq < 1e-6:
-            return 0.0, 0.0
-        kappa = 2.0 * ly / L_f_sq
-        delta = math.atan(self.wheelbase * kappa)
-        delta = max(-self.max_steer, min(self.max_steer, delta))
-
-        # --- Step 3.5. ADAPTIVE selective rate limit (responsive) ----------
-        # max_step scales INVERSELY with upcoming curvature (kappa_ahead),
-        # but the whole curve is shifted UP for faster overall response:
-        #   - gentle curve (κ ≈ 0)   → max_step = 0.15 rad (~8.6°)  very fast
-        #   - medium curve (κ ≈ 0.25) → max_step = 0.115 rad        fast
-        #   - sharp corner (κ ≥ 0.5)  → max_step = 0.08 rad (~4.6°)  moderate
-        # Sharp corners are still smoothed enough to suppress the long-
-        # straight → sharp-corner snap, but every other corner now feels
-        # noticeably more responsive → tighter line tracking.
-        prev_steer = getattr(self, '_prev_steer', 0.0)
-        kappa_frac = min(1.0, kappa_ahead / 0.5)         # 0 .. 1
-        max_step   = 0.15 - 0.07 * kappa_frac            # [rad/step]
-        diff       = delta - prev_steer
-        if diff >  max_step: delta = prev_steer + max_step
-        if diff < -max_step: delta = prev_steer - max_step
-        self._prev_steer = delta
-
-        # --- Step 4. speed -------------------------------------------------
-        # The offline _speed_profile() already brakes before corners, so only
-        # peek ~3 waypoints ahead to anticipate without double-braking.
-        N_wp = len(self.waypoints)
-        speeds = []
-        for k in range(3):
-            v = float(getattr(self.waypoints[(target_idx + k) % N_wp], 'vx_mps', 0.0))
-            if v > 0.0:
-                speeds.append(v)
-        speed = min(speeds) if speeds else 1.5
-
-        return delta, speed
+        #TODO
 
 
 def main(args=None):

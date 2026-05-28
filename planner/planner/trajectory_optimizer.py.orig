@@ -14,10 +14,10 @@ class TrajectoryOptimizer(Node):
         super().__init__('trajectory_optimizer')
 
         # ---- Parameters --------------------------------------------------
-        self.declare_parameter('map_name', 'team4_0526_1.png')
+        self.declare_parameter('map_name', '')
         self.declare_parameter('input_csv', 'centerline.csv')
         self.declare_parameter('output_csv', 'global_waypoints.csv')
-        self.declare_parameter('safety_margin', 0.2)   # [m]   clearance from each wall
+        self.declare_parameter('safety_margin', 0.20)   # [m]   clearance from each wall
         self.declare_parameter('v_max',         6.0)    # [m/s] vehicle speed cap
         self.declare_parameter('a_lat_max',     6.0)    # [m/s^2] lateral grip limit
         self.declare_parameter('a_long_max',    4.0)    # [m/s^2] longitudinal accel limit
@@ -134,135 +134,7 @@ class TrajectoryOptimizer(Node):
         # └─ Step 9. compute remaining clearance to the original walls (w_r_new, w_l_new)
         #             and return it together with the optimized line.
 
-        from scipy.optimize import minimize
-
-        # --- Step 1. uniform resample of the centerline --------------------
-        x_r, y_r, w_r_r, w_l_r = TrajectoryOptimizer._resample_uniform(
-            x_c, y_c, w_r, w_l, target_ds)
-        N = len(x_r)
-
-        # --- Step 2. helper: unit (left-pointing) normal at any line -------
-        def _normals(xs, ys):
-            dxn = (np.roll(xs, -1) - np.roll(xs, 1)) * 0.5
-            dyn = (np.roll(ys, -1) - np.roll(ys, 1)) * 0.5
-            Ln  = np.hypot(dxn, dyn) + 1e-12
-            return -dyn / Ln, dxn / Ln
-
-        # Smoothness operator on alpha — small weight so the wide-tight-wide
-        # racing-line shape is preserved but discretization jitter is removed.
-        S = np.zeros((N, N))
-        for i in range(N):
-            im1, ip1 = (i - 1) % N, (i + 1) % N
-            S[i, im1] =  1.0
-            S[i, i  ] = -2.0
-            S[i, ip1] =  1.0
-        StS = S.T @ S
-        lambda_smooth = 0.30
-
-        # alpha bounds along the ORIGINAL centerline normal
-        lo = -w_r_r + safety_margin
-        hi =  w_l_r - safety_margin
-
-        # --- Step 3 + 4. iterated min-curvature QP -------------------------
-        # First pass linearizes about the centerline; later passes re-linearize
-        # about the current optimized line, which sharpens the racing line in
-        # corners where the lateral offset is large.
-        xs, ys  = x_r.copy(), y_r.copy()
-        a_total = np.zeros(N)
-
-        for _ in range(5):
-            nx_, ny_ = _normals(xs, ys)
-
-            Ax = np.zeros((N, N))
-            Ay = np.zeros((N, N))
-            for i in range(N):
-                im1, ip1 = (i - 1) % N, (i + 1) % N
-                Ax[i, im1] =  nx_[im1]
-                Ax[i, i  ] = -2.0 * nx_[i]
-                Ax[i, ip1] =  nx_[ip1]
-                Ay[i, im1] =  ny_[im1]
-                Ay[i, i  ] = -2.0 * ny_[i]
-                Ay[i, ip1] =  ny_[ip1]
-            bx = np.roll(xs, -1) - 2.0 * xs + np.roll(xs, 1)
-            by = np.roll(ys, -1) - 2.0 * ys + np.roll(ys, 1)
-
-            H = Ax.T @ Ax + Ay.T @ Ay + lambda_smooth * StS
-            g = Ax.T @ bx + Ay.T @ by
-
-            lo_step = lo - a_total
-            hi_step = hi - a_total
-            a0 = np.clip(np.zeros(N), lo_step, hi_step)
-
-            result = minimize(
-                fun=lambda a: a @ (H @ a) + 2.0 * g @ a,
-                x0=a0,
-                jac=lambda a: 2.0 * (H @ a + g),
-                method='L-BFGS-B',
-                bounds=list(zip(lo_step, hi_step)),
-                options={'maxiter': 1000, 'ftol': 1e-10},
-            )
-            da = result.x
-
-            xs = xs + da * nx_
-            ys = ys + da * ny_
-            a_total = a_total + da
-
-            if np.max(np.abs(da)) < 5e-4:
-                break
-
-        # --- Step 5. recover optimal raceline coordinates ------------------
-        x_opt, y_opt = xs, ys
-        a = a_total
-
-        # --- Step 7. heading & curvature -----------------------------------
-        psi, kappa = TrajectoryOptimizer._geom(x_opt, y_opt)
-
-        # --- Step 8. speed profile (faster corners + post-corner hold) -----
-        # Three-stage profile:
-        #   (1) cornering cap = sqrt(a_lat/kappa), capped by v_top
-        #   (2) backward pass  → pre-corner braking
-        #   (3) POST-CORNER HOLD: keep the cornering speed for ~1.5 m after
-        #       each corner (prevents the inertia-bounce that throws the
-        #       car into the outer wall at corner exit)
-        #   (4) forward pass   → gentle acceleration kicks in AFTER the hold
-        v_top      = max(v_max, 10.0)           # long-straight top speed
-        a_accel    = 0.60 * a_long_max          # gentler exit acceleration
-        a_brake    = a_long_max                 # full brake authority
-        hold_dist  = 4.5                        # [m] post-corner speed hold
-
-        N_pts = len(x_opt)
-        ds = np.hypot(np.roll(x_opt, -1) - x_opt, np.roll(y_opt, -1) - y_opt)
-        ds[ds < 1e-6] = 1e-6
-        vx = np.minimum(v_top, np.sqrt(a_lat_max / np.maximum(np.abs(kappa), 1e-6)))
-
-        # (2) Backward pass: pre-corner braking
-        for _ in range(3):
-            for i in range(N_pts):
-                j = (i - 1) % N_pts
-                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake * ds[j])
-                vx[j] = min(vx[j], v_cap)
-
-        # (3) Post-corner hold: each point inherits the minimum of the
-        # previous hold_pts caps → corner speed gets extended forward,
-        # blocking the forward pass from ramping up immediately.
-        hold_pts = max(1, int(round(hold_dist / target_ds)))
-        vx_held = vx.copy()
-        for k in range(1, hold_pts + 1):
-            vx_held = np.minimum(vx_held, np.roll(vx, k))
-        vx = vx_held
-
-        # (4) Forward pass: GENTLE acceleration limit
-        for _ in range(3):
-            for i in range(N_pts):
-                j = (i + 1) % N_pts
-                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_accel * ds[i])
-                vx[j] = min(vx[j], v_cap)
-
-        # --- Step 9. remaining wall clearance ------------------------------
-        w_r_new = w_r_r + a
-        w_l_new = w_l_r - a
-
-        return x_opt, y_opt, psi, kappa, vx, w_r_new, w_l_new
+        raise NotImplementedError('TrajectoryOptimizer._optimize is not implemented yet')
 
     # ======================================================================
     #                            HELPERS

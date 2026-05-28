@@ -21,7 +21,7 @@ class SimpleMuxNode(Node):
         self.declare_parameter('scan_topic',                     '/scan')
         self.declare_parameter('odom_topic',                     '/vesc/odom')
         self.declare_parameter('rate_hz',                        50.0)
-        self.declare_parameter('joy_max_speed',                  4.0)
+        self.declare_parameter('joy_max_speed',                  7.0)
         self.declare_parameter('joy_max_steer',                  0.4)
         self.declare_parameter('joy_freshness_threshold',        1.0)
         self.declare_parameter('servo_min',                      0.15)
@@ -50,7 +50,7 @@ class SimpleMuxNode(Node):
         )
         
 
-        self.current_host = None
+        self.current_host = 'autodrive'
         self.human_drive  = None
         self.autodrive    = None
         self.scan         = None
@@ -87,9 +87,11 @@ class SimpleMuxNode(Node):
         zero.header.stamp = self.get_clock().now().to_msg()
 
         if self.current_host == 'autodrive' and self._is_fresh(self.autodrive):
-            out = self._clip(self.autodrive)
+            # out = self._clip(self.autodrive)
+            out = deepcopy(self.autodrive)
         elif self.current_host == 'humandrive' and self._is_fresh(self.human_drive):
-            out = self._clip(self.human_drive)
+            # out = self._clip(self.human_drive)
+            out = deepcopy(self.human_drive)
         else:
             out = zero
 

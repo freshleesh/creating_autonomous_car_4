@@ -25,6 +25,7 @@ setup(
             'controller_node    = controller.controller_ros:main',
             'wall_follow_node   = controller.wallfollow:main',
             'gap_follow_node    = controller.gapfollow:main',
+            'pp_node            = controller.PP:main',
         ],
     },
 )

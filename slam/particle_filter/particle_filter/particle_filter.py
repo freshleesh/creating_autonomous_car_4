@@ -23,6 +23,8 @@
 # ros2 python
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+
 
 # libraries
 import numpy as np
@@ -187,7 +189,11 @@ class ParticleFiler(Node):
             PoseWithCovarianceStamped,
             '/initialpose',
             self.clicked_pose,
-            1)
+            QoSProfile(
+                depth=1,
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                history=QoSHistoryPolicy.KEEP_LAST,
+            ))
         self.click_sub = self.create_subscription(
             PointStamped,
             '/clicked_point',

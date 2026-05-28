@@ -13,9 +13,10 @@ wall_follow:
     control_rate_hz:  50.0
     estop_min_dist:   0.5    # [m]
     estop_angle_deg: 30.0    # [deg]
-    wf_target_dist:   0.8    # desired gap from right wall [m]
+    wf_target_dist:   0.7    # desired gap from right wall [m]   0.7
     wf_kp:            1.0
+    wf_ki:            0.0
     wf_kd:            0.1
-    wf_speed:         1.5    # [m/s]
+    wf_speed:         4.0    # [m/s]    1.5
     wf_max_steer:     0.4    # [rad]
     wf_lookahead:     0.5    # [m]

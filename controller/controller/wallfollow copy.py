@@ -11,7 +11,7 @@ PARAMS = {
     'wf_target_dist':   0.8,
     'wf_kp':            0.8,
     'wf_kd':            0.5,
-    'wf_ki':            1.5,
+    'wf_ki':            2.0,
     'wf_speed':         1.5,
     'wf_max_steer':     0.4,
     'wf_lookahead':     0.5,
@@ -49,7 +49,6 @@ class WallFollowNode(Node):
         self.create_timer(1.0 / p('control_rate_hz'), self._loop)
 
         self.get_logger().info('WallFollowNode ready')
-        self.get_logger().info(f'Parameters: target_dist={self.target_dist}, kp={self.kp}, ki={self.ki}, kd={self.kd}, speed={self.speed}, lookahead={self.lookahead}')
 
         self.last_steer = 0.0
         self.last_speed = 0.0
@@ -118,17 +117,17 @@ class WallFollowNode(Node):
         for i, distance in enumerate(self.scan.ranges):
             angle = self.scan.angle_min + i * self.scan.angle_increment
             # We want to find points that are approximately at -90 degrees (right side)
-            if math.isclose(angle, math.radians(-30), abs_tol=math.radians(15)):
+            if math.isclose(angle, math.radians(-60), abs_tol=math.radians(30)):
                 x = distance * math.cos(angle)
                 y = distance * math.sin(angle)
-                if (x**2 + y**2) < 1.1**2:
+                if (x**2 + y**2) < 1.0**2:
                     right_wall_points.append((x, y))
         right_wall_points = np.array(right_wall_points)
 
 
         if len(right_wall_points) < 2:
             self.get_logger().warn('Not enough right wall points detected, skipping control')
-            return -0.4, 0.8  # go straight if we can't detect the wall
+            return -0.4, 0.6  # go straight if we can't detect the wall
 
 
         # find numerical properties of the right wall points using linear regression
@@ -158,17 +157,16 @@ class WallFollowNode(Node):
         self._prev_error = error
 
         #P
-        # steer = self.kp * error
+        steer = self.kp * error
         # #PI
         # steer = self.kp * error + self.ki * self._integral_error
         # #PID
-        steer = self.kp * error + self.ki * self._integral_error + self.kd * derivative
+        # steer = self.kp * error + self.ki * self._integral_error + self.kd * derivative
         
         steer = max(-self.get_parameter('wf_max_steer').value, min(self.get_parameter('wf_max_steer').value, steer))  # clamp steering
 
         ratio = abs(steer / self.get_parameter('wf_max_steer').value)
-        # speed = min(self.speed / (2*ratio), 1.5)  # constant speed for wall following
-        speed = max(self.speed * (1 - ratio), 2.0)
+        speed = min(self.speed / (2*ratio), 1.5)  # constant speed for wall following
 
         self.last_speed = speed
         self.last_steer = steer
