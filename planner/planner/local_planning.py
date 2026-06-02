@@ -58,7 +58,7 @@ def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
     x = np.where(valid, ranges * np.cos(angles), np.nan)
     y = np.where(valid, ranges * np.sin(angles), np.nan)
     return x, y
-
+ 
 # ===========================================================================
 #  PERCEPTION  (Using your code from perception_assignment.py)
 # ===========================================================================
@@ -71,6 +71,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     lambda_rad = math.radians(30.0)
     sigma      = 0.35   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
     min_points = 10      # 클러스터링 충족하는 포인트 수
+
 
     use_adaptive = angle_inc > 1e-9
     if use_adaptive:
