@@ -63,269 +63,252 @@ def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
 #  PERCEPTION  (Using your code from perception_assignment.py)
 # ===========================================================================
 
+
 def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
-    """Adaptive-breakpoint segmentation of an ordered 2-D scan.
 
-    Two consecutive points start a new cluster when their distance exceeds an
-    *adaptive* threshold that grows with range (Dietmayer breakpoint detector):
-
-        d_max = ( r * sin(angle_inc) / sin(lambda_rad - angle_inc) + 3*sigma )
-
-    Returns a list of clusters, each an (N, 2) ndarray of points.
-    """
+    
     # --- tunable parameters ---
-    lambda_rad = math.radians(10.0)   # max admissible incidence angle
-    sigma = 0.03                      # range-noise term [m]
-    min_points = 5                    # drop clusters smaller than this
+    lambda_rad = math.radians(30.0)
+    sigma      = 0.35   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
+    min_points = 10      # 클러스터링 충족하는 포인트 수
 
-    # --- variables you will use ---
-    clusters = []   # list of finished clusters -> the return value
-    current = []    # points of the cluster currently being built
-    prev = None     # previous valid point (x, y) for the jump test
+    use_adaptive = angle_inc > 1e-9
+    if use_adaptive:
+        denom = math.sin(lambda_rad - angle_inc)
+        if abs(denom) < 1e-6:
+            denom = 1e-6 if denom >= 0 else -1e-6
 
-    # Precompute the trigonometric ratio once.
-    denom = math.sin(lambda_rad - angle_inc)
-    if abs(denom) < 1e-6:
-        denom = 1e-6 if denom >= 0.0 else -1e-6
-    ratio = math.sin(angle_inc) / denom
+    clusters = []
+    current  = []
+    prev     = None
 
     n = len(x)
     for i in range(n):
-        xi, yi = x[i], y[i]
+        xi, yi = float(x[i]), float(y[i])
 
-        # 1. Invalid beam -> end of object: flush current cluster.
         if not (math.isfinite(xi) and math.isfinite(yi)):
             if len(current) >= min_points:
-                clusters.append(np.asarray(current, dtype=float))
+                clusters.append(current)
             current = []
-            prev = None
+            prev    = None
             continue
 
-        # 2. Valid beam.
         if prev is None:
+            current.append((xi, yi))
+            prev = (xi, yi)
+            continue
+
+        if use_adaptive:
+            r     = math.hypot(xi, yi)
+            d_max = (r * math.sin(angle_inc) / denom + 3.0 * sigma) / 2.0
+        else:
+            d_max = 0.3
+
+        jump = math.hypot(xi - prev[0], yi - prev[1])
+
+        if jump > d_max:
+            if len(current) >= min_points:
+                clusters.append(current)
             current = [(xi, yi)]
         else:
-            r = math.hypot(xi, yi)
-            d_max = (r * ratio + 3.0 * sigma) / 2.0
-            jump = math.hypot(xi - prev[0], yi - prev[1])
-            if jump > d_max:
-                # new object: flush previous, start fresh
-                if len(current) >= min_points:
-                    clusters.append(np.asarray(current, dtype=float))
-                current = [(xi, yi)]
-            else:
-                current.append((xi, yi))
+            current.append((xi, yi))
         prev = (xi, yi)
 
-    # 3. Flush the final cluster.
     if len(current) >= min_points:
-        clusters.append(np.asarray(current, dtype=float))
+        clusters.append(current)
 
     return clusters
 
 
+
+
+
+
+
+
+
+
+
 def l_shape_fitting(clusters):
-    """L-shape rectangle fit per cluster -> list of (cx, cy, w, h, theta).
-
-    `w` x `h` = rectangle side lengths, `theta` = heading [rad], vehicle frame.
-    Search-based "closeness" fitting: rotate the cluster over many candidate
-    orientations and keep the one where the points hug the rectangle edges
-    tightest. Drop boxes larger than max_obs_size.
-
-    For ONE candidate angle, project every point onto the rotated axes
-    (a = along the heading, b = perpendicular). The candidate rectangle is
-    just the min/max box of (a, b). Each point's "closeness" is
-    1 / (distance to the NEAREST of the 4 box edges); the angle that
-    maximises the summed closeness
-
-        score(theta) = sum_i  1 / max(d_i, min_edge)
-
-    wins. From that best angle: w, h are the two (max - min) spans, the
-    centre is the box midpoint rotated back into the vehicle frame, and
-    theta is the best angle itself.
-    """
     # --- tunable parameters ---
-    max_obs_size = 0.55   # [m] drop boxes whose larger side exceeds this
-    min_size     = 0.3    # [m] floor on each side (partial views stay >= this)
-    min_edge     = 0.01   # [m] floor on point-to-edge distance (avoid 1/0)
-    n_angles     = 90     # orientation search resolution over [0, 90) deg
-    # Vehicle-like position gate: walls in F1TENTH corners sit at large |cy|
-    # or behind us, so we drop those candidates before they get published.
-    max_lat      = 0.7    # [m] keep only boxes within this lateral distance
+    max_obs_size = 0.9       # 장애물 길이 범위
+    min_size     = 0.15       
+    min_edge     = 0.01
+    n_angles     = 90
 
-    # --- variables you will use ---
-    thetas = np.linspace(0.0, np.pi / 2 - np.pi / 180, n_angles)
-    cos_t, sin_t = np.cos(thetas), np.sin(thetas)
-    obstacles = []        # list of (cx, cy, w, h, theta) -> the return value
+    CAR_LENGTH = 0.50
+    CAR_WIDTH  = 0.35
 
-    for pts in clusters:
-        if pts.shape[0] < 2:
+    thetas        = np.linspace(0.0, np.pi / 2 - np.pi / 180, n_angles)
+    cos_t, sin_t  = np.cos(thetas), np.sin(thetas)
+    obstacles     = []
+
+    for cl in clusters:
+        pts = np.array(cl, dtype=float)
+        if pts.shape[0] < 3:
             continue
 
-        # 1. Project all points onto every candidate orientation.
-        #    pts[:, 0:1] / pts[:, 1:2] keep the column axis so the
-        #    broadcast against cos_t / sin_t produces an (N, n_angles)
-        #    matrix in one shot - no Python loop over angles.
-        a =  pts[:, 0:1] * cos_t + pts[:, 1:2] * sin_t   # (N, n_angles)
-        b = -pts[:, 0:1] * sin_t + pts[:, 1:2] * cos_t   # (N, n_angles)
+        centroid     = np.mean(pts, axis=0)
+        pts_centered = pts - centroid
+        cov          = np.cov(pts_centered, rowvar=False)
+        try:
+            eigenvalues, _ = np.linalg.eigh(cov)
+            if max(eigenvalues) / (min(eigenvalues) + 1e-6) > 1000.0:
+                continue
+        except np.linalg.LinAlgError:
+            continue
 
-        # 2. Distance to the nearest of the 4 box edges per (point, angle).
-        a_min = a.min(axis=0)
-        a_max = a.max(axis=0)
-        b_min = b.min(axis=0)
-        b_max = b.max(axis=0)
-        da = np.minimum(a - a_min, a_max - a)
-        db = np.minimum(b - b_min, b_max - b)
-        d  = np.minimum(da, db)
+        a = pts_centered[:, 0:1] * cos_t + pts_centered[:, 1:2] * sin_t
+        b = -pts_centered[:, 0:1] * sin_t + pts_centered[:, 1:2] * cos_t
 
-        # 3. Closeness score per angle; pick the best.
-        score = np.sum(1.0 / np.maximum(d, min_edge), axis=0)   # (n_angles,)
-        k = int(np.argmax(score))
-        theta = float(thetas[k])
-        c, s = float(cos_t[k]), float(sin_t[k])
+        a_min, a_max = a.min(axis=0), a.max(axis=0)
+        b_min, b_max = b.min(axis=0), b.max(axis=0)
 
-        # 4. Size the box at the winning angle.
-        ak, bk = a[:, k], b[:, k]
-        ak_min, ak_max = float(ak.min()), float(ak.max())
-        bk_min, bk_max = float(bk.min()), float(bk.max())
-        w = ak_max - ak_min
-        h = bk_max - bk_min
+        da    = np.minimum(a - a_min, a_max - a)
+        db    = np.minimum(b - b_min, b_max - b)
+        d     = np.minimum(da, db)
+        score = np.sum(1.0 / np.maximum(d, min_edge), axis=0)
 
-        # Centre in the rotated frame -> rotate back into the vehicle frame.
-        ca = 0.5 * (ak_max + ak_min)
-        cb = 0.5 * (bk_max + bk_min)
-        cx = ca * c - cb * s
-        cy = ca * s + cb * c
+        w_cand = a_max - a_min
+        h_cand = b_max - b_min
 
-        # 5. Reject huge boxes; clamp tiny sides; gate by vehicle-frame
-        #    position (front of us, not far laterally) so corner-wall
-        #    fragments don't get published as blue boxes; then store.
+        size_penalty = (
+            np.exp(-((w_cand - 0.45)**2) / 0.25) * np.exp(-((h_cand - 0.35)**2) / 0.25) +
+            np.exp(-((w_cand - 0.35)**2) / 0.25) * np.exp(-((h_cand - 0.45)**2) / 0.25)
+        )
+        k = int(np.argmax(score * size_penalty))
+
+        c = float(cos_t[k]); s = float(sin_t[k])
+        w = float(a_max[k] - a_min[k])
+        h = float(b_max[k] - b_min[k])
+
         if max(w, h) > max_obs_size:
             continue
-        if cx <= 0.0:           # behind us -> not a candidate
-            continue
-        if abs(cy) > max_lat:   # too far to the side -> probably a wall
-            continue
-        w = max(w, min_size)
-        h = max(h, min_size)
-        obstacles.append((cx, cy, w, h, theta))
+
+        if w > h:
+            w, h = CAR_LENGTH, CAR_WIDTH
+        else:
+            w, h = CAR_WIDTH, CAR_LENGTH
+
+        ca = 0.5 * (a_max[k] + a_min[k])
+        cb = 0.5 * (b_max[k] + b_min[k])
+        cx = float(ca * c - cb * s + centroid[0])
+        cy = float(ca * s + cb * c + centroid[1])
+
+        obstacles.append((cx, cy, w, h))
 
     return obstacles
 
 
 
+
+
+
+
+
+
+
+
 def tracking(obstacles, track, dt: float, ego):
-    """One linear constant-velocity Kalman tracker, run in the MAP frame.
-
-    `obstacles` = list of (cx, cy, w, h, theta) in the VEHICLE frame.
-    `ego`       = (ex, ey, eyaw) ego pose in the MAP frame (from odom).
-    `track`     = (state[x,y,vx,vy], P, misses) in the MAP frame, or None.
-
-    The obstacle selection + vehicle->map transform + track bookkeeping are
-    PROVIDED. The inline Kalman predict + update on the MAP-frame (state, P)
-    is the part you implement (the TODO block). Running in the map frame
-    makes the estimated (vx, vy) the opponent's true WORLD velocity.
-    """
     # --- tunable parameters ---
-    opp_max_lat = 0.7    # [m] ignore obstacles farther sideways than this
-    max_misses  = 5      # drop the track after this many missed frames
-    gate_radius = 1.5    # [m] reject measurements this far from KF prediction
-    q = 0.05             # Kalman process-noise scale (smaller -> smoother velocity)
-    r = 0.30             # Kalman measurement-noise scale (larger -> trust model more)
-    lidar_to_base_x = 0.27   # [m] base_link -> laser TF (x); odom is base_link
-    car_half_length = 0.32   # [m] push the centroid this far past the visible face
+    opp_max_lat     = 7       # 좌우 트래킹 범위
+    max_misses      = 15      # 안보일때 예측 유지 프레임 수
+    Q_scale         = 0.5    # 칼만필터 노이즈 공분산
+    R_scale         = 0.5    # 측정 노이즈 가중치
+    assoc_threshold = 1   # 동일한 물체로 인식하는 거리 기준
+    lidar_to_base_x = 0.5     # 라이다 기준 좌표 거리
+    
+    # (1.0에 가까울수록 지연 없이 즉시 반영, 낮을수록 부드러움)
+    ALPHA           = 0.05
 
-    # --- variables you will use ---
     ex, ey, eyaw = ego
-    meas = None        # [mx, my] of the opponent in the MAP frame, or None
 
-    # (A) Pick the opponent measurement (nearest valid box) and lift it
-    #     from the LASER frame into the MAP frame.
-    best = None
-    best_d = float('inf')
-    for (cx, cy, _w, _h, _theta) in obstacles:
-        if cx <= 0.0:                # must be ahead of the car
-            continue
-        if abs(cy) > opp_max_lat:    # too far sideways -> ignore
-            continue
-        d = math.hypot(cx, cy)
-        if d < best_d:
-            best_d = d
-            best = (cx, cy)
 
-    if best is not None:
-        lx, ly = best
-        # LiDAR only sees the FACE of the opponent closest to us, so the box
-        # centroid lands on that face (typically the rear bumper) - not the
-        # vehicle centre. Push the measurement radially outward by half a
-        # car length so the tracked point sits near the actual centre.
-        rr = math.hypot(lx, ly)
-        if rr > 1e-6:
-            lx += (lx / rr) * car_half_length
-            ly += (ly / rr) * car_half_length
-        # laser -> base_link : laser is +lidar_to_base_x ahead of base_link
-        bx = lx + lidar_to_base_x
-        by = ly
-        # base_link -> map : rotate by eyaw, translate by ego position
-        cyaw, syaw = math.cos(eyaw), math.sin(eyaw)
-        mx = ex + cyaw * bx - syaw * by
-        my = ey + syaw * bx + cyaw * by
-        meas = np.array([mx, my], dtype=float)
+
+    meas = None
+    best_dist = float('inf')
+    for (cx_l, cy_l, w, h) in obstacles:
+        if not (0.0 < cx_l < 15.0 and abs(cy_l) <= opp_max_lat): # 앞뒤 좌우 트래킹 범위
+            continue
+        bx = cx_l + lidar_to_base_x
+        by = cy_l
+        gx = ex + bx * math.cos(eyaw) - by * math.sin(eyaw)
+        gy = ey + bx * math.sin(eyaw) + by * math.cos(eyaw)
+
+        dist = math.hypot(gx - ex, gy - ey)
+        if dist < best_dist:
+            best_dist = dist
+            meas = (gx, gy)
 
     if track is None:
         if meas is None:
             return None
         state = np.array([meas[0], meas[1], 0.0, 0.0])
-        return (state, np.eye(4), 0, 1)   # hits = 1 on first sighting
+        P     = np.eye(4)
+        return (state, P, 0)
 
-    state, P, misses, hits = track
+    state, P, misses = track
+    
+    prev_gx, prev_gy = float(state[0]), float(state[1])
 
-    # --- matrices we build for the linear constant-velocity model ---
-    # state = [x, y, vx, vy].  x += vx*dt, y += vy*dt; velocity is constant.
+
+    # ── 3. Predict ──
     F = np.array([
         [1.0, 0.0,  dt, 0.0],
         [0.0, 1.0, 0.0,  dt],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    Q = q * np.eye(4)            # process noise (4x4)
-    H = np.array([               # we observe (x, y) only
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-    ])
-    R = r * np.eye(2)            # measurement noise (2x2)
-
-    # 1. Predict step.
+    Q     = np.eye(4) * Q_scale
     state = F @ state
     P     = F @ P @ F.T + Q
 
-    # 1b. Gate: if the new measurement is too far from the prediction, it is
-    #     almost certainly a different object (wall fragment, noise, etc.).
-    #     Treat it as "no measurement this frame" so a single false positive
-    #     can't hijack the track.
+    # ── 4. Update / coast ──
     if meas is not None:
-        if math.hypot(meas[0] - state[0], meas[1] - state[1]) > gate_radius:
-            meas = None
+        pred_pos = state[:2]
+        if math.hypot(meas[0] - pred_pos[0], meas[1] - pred_pos[1]) <= assoc_threshold:
+            H = np.array([
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+            ])
+            R     = np.eye(2) * R_scale
+            z     = np.array([meas[0], meas[1]])
+            innov = z - H @ state
+            S     = H @ P @ H.T + R
+            K     = P @ H.T @ np.linalg.inv(S)
+            state = state + K @ innov
+            P     = (np.eye(4) - K @ H) @ P
+            misses = 0
+            
 
-    # 2. Update step (only if we actually saw the opponent this scan).
-    if meas is not None:
-        z     = np.asarray(meas, dtype=float)
-        innov = z - H @ state
-        S     = H @ P @ H.T + R
-        K     = P @ H.T @ np.linalg.inv(S)
-        state = state + K @ innov
-        P     = (np.eye(4) - K @ H) @ P
-    # ---- end TODO ----
-
-    if meas is not None:
-        misses = 0
-        hits   = hits + 1
+            raw_vx = (meas[0] - prev_gx) / dt
+            raw_vy = (meas[1] - prev_gy) / dt
+            
+            state[2] = ALPHA * raw_vx + (1.0 - ALPHA) * state[2]
+            state[3] = ALPHA * raw_vy + (1.0 - ALPHA) * state[3]
+            
+        else:
+            state  = np.array([meas[0], meas[1], 0.0, 0.0])
+            P      = np.eye(4)
+            misses = 0
     else:
-        misses = misses + 1
-        # hits stays - a confirmed track shouldn't lose confidence on one miss
+        misses += 1
+
     if misses > max_misses:
         return None
-    return (state, P, misses, hits)
+
+    return (state, P, misses)
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -479,6 +462,8 @@ class LocalPlanning(Node):
         self.local_pub  = self.create_publisher(WpntArray,   self.local_topic, latched)
         self.marker_pub = self.create_publisher(MarkerArray, '/local_waypoints/markers', 10)
         self.cand_pub   = self.create_publisher(MarkerArray, '/local_planning/candidates', 5)
+        self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
+        self.trk_pub    = self.create_publisher(MarkerArray, '/local_planning/tracking', 5)
 
         self.get_logger().info(
             f'local_planning up | mode={self.mode} | horizon={self.local_horizon} m | '
@@ -514,6 +499,10 @@ class LocalPlanning(Node):
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
 
+        # 1.5) Publish RViz Markers for Detection and Tracking
+        self._publish_detection_markers(obstacles)
+        self._publish_tracking_markers()
+
         # 2) ego frenet
         self.ego_s, self.ego_d = self.to_frenet(self.ex, self.ey)
 
@@ -530,6 +519,90 @@ class LocalPlanning(Node):
 
         self.local_pub.publish(out)
         self._publish_local_markers(out, used_mode)
+
+    def _publish_detection_markers(self, obstacles):
+        ma = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        ma.markers.append(clear)
+
+        lidar_to_base_x = 0.27
+        stamp = self.get_clock().now().to_msg()
+
+        for i, (cx_l, cy_l, w, h) in enumerate(obstacles):
+            bx = cx_l + lidar_to_base_x
+            by = cy_l
+            gx = self.ex + bx * math.cos(self.eyaw) - by * math.sin(self.eyaw)
+            gy = self.ey + bx * math.sin(self.eyaw) + by * math.cos(self.eyaw)
+
+            m = Marker()
+            m.header.frame_id = 'map'
+            m.header.stamp = stamp
+            m.ns = 'detections'
+            m.id = i
+            m.type = Marker.CUBE
+            m.action = Marker.ADD
+            m.pose.position.x = gx
+            m.pose.position.y = gy
+            m.pose.position.z = 0.2
+            m.pose.orientation.w = 1.0
+            m.scale.x = w
+            m.scale.y = h
+            m.scale.z = 0.4
+            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 1.0, 0.0, 0.5
+            ma.markers.append(m)
+
+        self.det_pub.publish(ma)
+
+    def _publish_tracking_markers(self):
+        ma = MarkerArray()
+        clear = Marker()
+        clear.action = Marker.DELETEALL
+        ma.markers.append(clear)
+
+        if self.track is not None:
+            state, P, misses = self.track
+            gx, gy, vx, vy = state
+            stamp = self.get_clock().now().to_msg()
+
+            m = Marker()
+            m.header.frame_id = 'map'
+            m.header.stamp = stamp
+            m.ns = 'tracking_pos'
+            m.id = 0
+            m.type = Marker.CYLINDER
+            m.action = Marker.ADD
+            m.pose.position.x = float(gx)
+            m.pose.position.y = float(gy)
+            m.pose.position.z = 0.2
+            m.pose.orientation.w = 1.0
+            m.scale.x = 0.5
+            m.scale.y = 0.5
+            m.scale.z = 0.5
+            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 0.8
+            ma.markers.append(m)
+
+            speed = math.hypot(vx, vy)
+            if speed > 0.1:
+                arr = Marker()
+                arr.header.frame_id = 'map'
+                arr.header.stamp = stamp
+                arr.ns = 'tracking_vel'
+                arr.id = 1
+                arr.type = Marker.ARROW
+                arr.action = Marker.ADD
+                p1 = Point()
+                p1.x, p1.y, p1.z = float(gx), float(gy), 0.2
+                p2 = Point()
+                p2.x, p2.y, p2.z = float(gx + vx), float(gy + vy), 0.2
+                arr.points = [p1, p2]
+                arr.scale.x = 0.1
+                arr.scale.y = 0.2
+                arr.scale.z = 0.0
+                arr.color.r, arr.color.g, arr.color.b, arr.color.a = 0.0, 1.0, 0.0, 0.8
+                ma.markers.append(arr)
+
+        self.trk_pub.publish(ma)
 
     # ================================================================== #
     # Frenet spline
