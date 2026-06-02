@@ -10,19 +10,24 @@
     pp_v_max_boost:    9.0     # boosted speed cap [m/s]
 
     # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
-    pp_lookahead_gain: 0.35    # tune up → smoother/faster, down → tighter tracking
-    pp_lookahead_min:  0.8     # minimum L_f [m]
-    pp_lookahead_max:  2.5     # maximum L_f [m]
+    pp_lookahead_gain: 0.18    # lowered again: shorter lookahead → tracks the line tighter, less corner cut
+    pp_lookahead_min:  0.6     # lowered: tight tracking at low speed / in corners
+    pp_lookahead_max:  1.1     # lowered from 1.6: long lookahead chord-cuts the inside of corners
 
     # Curvature feedforward
-    pp_ff_gain:        0.5     # 0.0 = off, 1.0 = full feedforward
+    pp_ff_gain:        0.15    # lowered again: was adding steer into the corner on top of geometry (inside cut)
 
     # CTE-adaptive lookahead shrink (bigger = more aggressive shrink when off-path)
     pp_cte_gain:       2.0
 
     # Direct error feedback — start with 0, tune up carefully to avoid oscillation
-    pp_Kp_cte:         0.0     # lateral error gain [rad/m]
+    pp_Kp_cte:         0.6     # raised again: strong pull back ONTO the line (kills inside cut)
     pp_K_heading:      0.0     # heading error gain [rad/rad]
+
+    # [v6] Target-heading feedback. PP geometry already aims at target_idx, so this
+    #   double-steers toward the forward (inside) heading. Code comment recommends 0;
+    #   default was 0.10 (not set in this file) which biased the car inside corners.
+    pp_K_heading_target: 0.0
 
     # [v3] Steering rate limiter [rad/s] — lower = smoother, higher = more responsive
     pp_steer_rate_max: 1.5
@@ -33,7 +38,7 @@
 
     # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
     #   larger = shorter lookahead at corners = tighter tracking but may oscillate
-    pp_kappa_lookahead_gain: 1.5
+    pp_kappa_lookahead_gain: 2.5    # raised: shrink lookahead harder in corners → hugs the line, not the apex
 
     # [v3] Lateral acceleration cap: speed ≤ sqrt(a_lat_max / kappa)
     #   physics-based hard limit — lower = safer corners, higher = faster

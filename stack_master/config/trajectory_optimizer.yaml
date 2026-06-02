@@ -1,6 +1,6 @@
 /**:
   ros__parameters:
-    safety_margin:       0.3    # symmetric wall margin both sides [m] — lowered from 0.5 to fit narrow sections
+    safety_margin:       0.4    # symmetric wall margin both sides [m] — raised for more clearance from walls
     v_max:               6.0    # top speed cap [m/s]
     a_lat_max:           6.0    # lateral grip limit — sets corner speed [m/s²]
     a_long_max:          4.0    # longitudinal accel cap [m/s²]

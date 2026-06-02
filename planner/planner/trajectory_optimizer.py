@@ -167,7 +167,7 @@ class TrajectoryOptimizer(Node):
         #   only restrained by the inner/outer wall bounds, then crank it
         #   up x10 in polishing to remove any zig-zag the aggressive line
         #   left behind.
-        lambda_smooth = 0.03      # very loose — let the line fully dive to the apex
+        lambda_smooth = 0.10      # raised: pulls line toward center, less apex dive (gentler corners)
 
         # Curvature-jerk operator on alpha (4th difference). alpha's 4th diff
         # is proportional to kappa's 2nd diff, i.e. the rate-of-change of
@@ -182,7 +182,7 @@ class TrajectoryOptimizer(Node):
             T[i, ip1] = -4.0
             T[i, ip2] =  1.0
         TtT = T.T @ T
-        lambda_jerk = 0.5
+        lambda_jerk = 1.0         # raised: smoother curvature transitions at corner entry/exit
 
         # Shortest-path term (Option D).
         # L² = Σ|Δr|², quadratic in da → adds to H and g as λ_short · L².
@@ -223,8 +223,8 @@ class TrajectoryOptimizer(Node):
         # Apex still gets a tighter margin than the outer side, but not
         # razor-thin — 5 cm felt too risky in sim. 10 cm at the apex still
         # gives noticeably more "inside" room than a symmetric layout.
-        margin_inner = 0.10
-        margin_outer = safety_margin + 0.15              # loose outer (~0.45 m)
+        margin_inner = 0.18      # raised: keep the line off the inner wall (less apex hugging)
+        margin_outer = safety_margin + 0.15              # loose outer
         mid = 0.5 * (margin_inner + margin_outer)
 
         m_in_eff  = mid + (margin_inner - mid) * turn
@@ -268,7 +268,7 @@ class TrajectoryOptimizer(Node):
         exit_extra  = 0.06      # [m] extra inner pull at corner exit
         m_in_eff = m_in_eff + entry_extra * entry_bias_s \
                             - exit_extra  * exit_bias_s
-        m_in_eff = np.clip(m_in_eff, 0.05, margin_outer)
+        m_in_eff = np.clip(m_in_eff, 0.15, margin_outer)   # raised floor: never razor-thin on the inside
 
         # Two-phase budget (tuned via sweep).
         #
@@ -298,6 +298,15 @@ class TrajectoryOptimizer(Node):
         m_right = np.where(ksign > 0, m_out_eff, m_in_eff)
         hi =  w_l_r - m_left
         lo = -w_r_r + m_right
+
+        # Pinch-point guard: at narrow sections the margins can exceed the
+        # track width and invert the corridor (lo > hi), which makes OSQP
+        # reject the problem ("lower bound > upper bound"). Collapse such
+        # points to the band midpoint so we always pass l <= u.
+        bad = lo > hi
+        mid_band = 0.5 * (lo + hi)
+        lo = np.where(bad, mid_band, lo)
+        hi = np.where(bad, mid_band, hi)
 
         # --- Step 3 + 4. iterated min-curvature QP -------------------------
         # First pass linearizes about the centerline; later passes re-linearize
