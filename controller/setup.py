@@ -32,6 +32,7 @@ setup(
             'pp_v5_node         = controller.PP_v5:main',
             'pp_v6_node         = controller.PP_v6:main',
             'stanley_node       = controller.Stanley:main',
+            'mppi_node          = controller.MPPI:main',
         ],
     },
 )
