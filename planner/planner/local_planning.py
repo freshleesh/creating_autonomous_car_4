@@ -207,9 +207,6 @@ def l_shape_fitting(clusters):
 
 
 
-
-
-
 def tracking(obstacles, track, dt: float, ego):
     # --- tunable parameters ---
     opp_max_lat     = 7       # 좌우 트래킹 범위
