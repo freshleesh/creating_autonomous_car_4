@@ -53,15 +53,18 @@
                 output="screen"/>
   </group>
 
-  <!-- 3. Pure Pursuit. PP subscribes to /local_waypoints directly. -->
+  <!-- 3. Pure Pursuit (PP_v6). PP_v6 subscribes to /global_waypoints, so we
+          remap it to /local_waypoints to follow the local planner output. -->
   <group if="$(var sim)">
-    <node pkg="controller" exec="pp_node" name="pp" output="screen">
+    <node pkg="controller" exec="pp_v6_node" name="pp" output="screen">
       <param from="$(var config)"/>
+      <remap from="/global_waypoints" to="/local_waypoints"/>
     </node>
   </group>
   <group unless="$(var sim)">
-    <node pkg="controller" exec="pp_node" name="pp" output="screen">
+    <node pkg="controller" exec="pp_v6_node" name="pp" output="screen">
       <param from="$(var config)"/>
+      <remap from="/global_waypoints" to="/local_waypoints"/>
       <remap from="/vesc/odom" to="/car_state/odom"/>
     </node>
   </group>
