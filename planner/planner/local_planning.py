@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝
+#로컬플래닝 0602 17:50
 
 """
 local_planning.py - Standalone mode-selectable local planner.
