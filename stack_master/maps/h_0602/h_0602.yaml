@@ -1,0 +1,7 @@
+image: h_0602.pgm
+mode: trinary
+resolution: 0.050
+origin: [-25.902, -17.107, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
