@@ -1,0 +1,48 @@
+mppi:
+  ros__parameters:
+    # Control loop
+    control_rate_hz:    20.0
+
+    # Rollout shape (changing these triggers a JAX recompile on next launch)
+    n_samples:           256
+    n_steps:             12
+    sim_time_step:       0.1
+    n_iterations:          1
+
+    # Sampling std (in normalized [-1, 1] action space)
+    control_std_steer:   0.5
+    control_std_accel:   0.5
+
+    # Half-range scales: normalized 1.0 → this many physical units
+    steer_vel_scale:     3.2   # rad/s
+    accel_scale:         9.51  # m/s^2
+
+    # Reference picking from /global_waypoints
+    use_waypoint_speed:  true
+    ref_speed:           2.0
+    ref_speed_scale:     1.0
+
+    # Cost weights
+    xy_weight:           1.0
+    velocity_weight:     0.1
+    yaw_weight:          0.2
+
+    # MPPI hyperparameters
+    temperature:         0.01
+    damping:             0.001
+
+    # Output clamps
+    max_steering_angle:  0.4
+    min_speed:           0.0
+    max_speed:           6.0
+
+    # Detection-based opponent keep-out
+    use_detection:       false
+    max_obstacles:         8
+    obstacle_weight:    50.0
+    obstacle_radius:     0.6
+    laser_x_offset:      0.27
+    detection_timeout:   0.5
+
+    # Vehicle
+    wheelbase:           0.33

@@ -23,3 +23,6 @@ slam/range_libc/pywrapper/*.egg
 # Documentation (auto-generated)
 **/docs/html/
 **/docs/xml/
+
+# local network config (machine-specific)
+cyclonedds.xml

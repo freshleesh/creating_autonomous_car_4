@@ -1,0 +1,53 @@
+<launch>
+  <!--
+    mppi.launch.xml
+    ====================
+    MPPI controller + global waypoints publisher (+ optional LiDAR detection).
+
+    Run AFTER:
+      sim  : ros2 launch stack_master low_level.launch.xml sim:=true map:=f
+      real : ros2 launch stack_master middle_level.launch.xml map:=f
+
+    Usage:
+      sim  : ros2 launch stack_master mppi.launch.xml map:=f sim:=true
+      sim w/ detection :
+             ros2 launch stack_master mppi.launch.xml map:=f sim:=true use_detection:=true
+      real : ros2 launch stack_master mppi.launch.xml map:=f
+  -->
+
+  <arg name="map"            description="Map name (folder in stack_master/maps/)"/>
+  <arg name="sim"            default="false" description="true: sim (/vesc/odom from gym_bridge, map frame); false: real car (remap to /car_state/odom from EKF)"/>
+  <arg name="use_detection"  default="false" description="true: subscribe to /detections and add an opponent keep-out cost; also launches detect_node"/>
+  <arg name="config"         default="$(find-pkg-share stack_master)/config/mppi.yaml"/>
+
+  <!-- Global waypoints publisher (loads stack_master/maps/<map>/global_waypoints.csv) -->
+  <node pkg="planner" exec="waypoint_publisher" name="waypoint_publisher" output="screen">
+    <param name="map_name" value="$(var map)"/>
+  </node>
+
+  <!-- Optional perception: LiDAR-based obstacle detection.
+       Publishes /detections (ObstacleArray, frame=laser) which the MPPI node
+       transforms to map frame using ego pose + a static laser x-offset. -->
+  <group if="$(var use_detection)">
+    <node pkg="perception" exec="detect_node" name="detect_node" output="screen"/>
+  </group>
+
+  <!-- MPPI controller.
+       sim : gym_bridge publishes /vesc/odom directly in map frame (GT), no remap needed.
+       real: VESC /vesc/odom is wheel-only in odom frame (drifts), use EKF-filtered
+             /car_state/odom (map frame) by remapping the subscription. -->
+  <group if="$(var sim)">
+    <node pkg="controller" exec="mppi_node" name="mppi" output="screen">
+      <param from="$(var config)"/>
+      <param name="use_detection" value="$(var use_detection)"/>
+    </node>
+  </group>
+  <group unless="$(var sim)">
+    <node pkg="controller" exec="mppi_node" name="mppi" output="screen">
+      <param from="$(var config)"/>
+      <param name="use_detection" value="$(var use_detection)"/>
+      <remap from="/vesc/odom" to="/car_state/odom"/>
+    </node>
+  </group>
+
+</launch>

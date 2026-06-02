@@ -66,14 +66,14 @@ def generate_launch_description():
                     {'publish_tf': publish_tf}],
         remappings=[('/initialpose', '/sim/initialpose')]
     )
-    # rviz_node = Node(
-    #     package='rviz2',
-    #     executable='rviz2',
-    #     name='rviz',
-    #     arguments=[
-    #         '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim.rviz')],
-    #     remappings=[('/initialpose', '/sim/initialpose')]
-    # )
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz',
+        arguments=[
+            '-d', os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim.rviz')],
+        remappings=[('/initialpose', '/sim/initialpose')]
+    )
 
     ego_robot_publisher = Node(
         package='robot_state_publisher',
@@ -97,7 +97,7 @@ def generate_launch_description():
     ld.add_action(map_yaml_path_arg)
     ld.add_action(ego_odom_topic_arg)
     ld.add_action(publish_tf_arg)
-    # ld.add_action(rviz_node)
+    ld.add_action(rviz_node)
     ld.add_action(bridge_node)
     ld.add_action(ego_robot_publisher)
     if has_opp:
