@@ -212,7 +212,7 @@ def l_shape_fitting(clusters):
 
 def tracking(obstacles, track, dt: float, ego):
     # --- tunable parameters ---
-    opp_max_lat     = 7       # 좌우 트래킹 범위
+    opp_max_lat     = 5       # 좌우 트래킹 범위
     max_misses      = 15      # 안보일때 예측 유지 프레임 수
     Q_scale         = 0.5    # 칼만필터 노이즈 공분산
     R_scale         = 0.5    # 측정 노이즈 가중치
@@ -414,7 +414,7 @@ class LocalPlanning(Node):
         self.d_safe        = float(gp('d_safe',       0.7))     # [m] lateral offset
         self.s_in          = float(gp('s_in',         2.0))     # [m] min approach gap
         self.s_out         = float(gp('s_out',        2.5))     # [m] peak -> raceline
-        self.trigger_range = float(gp('trigger_range', 8.0))    # [m] forward trigger range
+        self.trigger_range = float(gp('trigger_range', 4.0))    # [m] forward trigger range
         self.margin        = float(gp('margin',       0.2))     # [m] wall/obstacle margin
         self.obs_radius    = float(gp('obs_radius',   0.4))     # [m] obstacle inflate
         self.track_half_w  = float(gp('track_half_w', 0.8))     # [m] fallback half-width
