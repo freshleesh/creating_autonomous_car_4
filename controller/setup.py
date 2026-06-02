@@ -26,7 +26,12 @@ setup(
             'wall_follow_node   = controller.wallfollow:main',
             'gap_follow_node    = controller.gapfollow:main',
             'pp_node            = controller.PP:main',
-            'mppi_node          = controller.MPPI:main',
+            'pp_v2_node         = controller.PP_v2:main',
+            'pp_v3_node         = controller.PP_v3:main',
+            'pp_v4_node         = controller.PP_v4:main',
+            'pp_v5_node         = controller.PP_v5:main',
+            'pp_v6_node         = controller.PP_v6:main',
+            'stanley_node       = controller.Stanley:main',
         ],
     },
 )

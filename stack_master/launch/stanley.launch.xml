@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="map" description="Map name (folder in stack_master/maps/)"/>
+  <arg name="sim" default="false"/>
+
+  <!-- ========== SIMULATOR (sim=true only) ========== -->
+  <group if="$(var sim)">
+    <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
+    <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
+
+    <!-- f1tenth gym bridge: virtual /scan + /car_state/odom + TF -->
+    <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
+      <arg name="map_yaml_path" value="$(var map_path).yaml"/>
+    </include>
+
+    <!-- Static obstacles on the map -->
+    <include file="$(find-pkg-share obstacle_publisher)/launch/obstacle_publisher.launch.xml">
+      <arg name="map_name" value="$(var map)"/>
+    </include>
+
+    <!-- Command mux: /vesc/high_level/ackermann_cmd → /vesc/ackermann_cmd
+         sim=true starts in autodrive mode so commands pass through immediately -->
+    <node pkg="stack_master" exec="simple_mux_node.py" name="simple_mux" output="log">
+      <param name="in_topic"      value="/vesc/high_level/ackermann_cmd"/>
+      <param name="out_topic"     value="/vesc/ackermann_cmd"/>
+      <param name="joy_max_speed" value="4.0"/>
+      <param name="sim"           value="true"/>
+    </node>
+
+  </group>
+
+  <!-- Waypoint Publisher -->
+  <node pkg="planner" exec="waypoint_publisher" name="waypoint_publisher" output="screen">
+    <param name="map_name" value="$(var map)"/>
+  </node>
+
+  <!-- odom topic: sim uses /car_state/odom (gym_bridge), real uses /vesc/odom (VESC) -->
+  <let name="odom_topic" value="/vesc/odom"      unless="$(var sim)"/>
+  <let name="odom_topic" value="/car_state/odom" if="$(var sim)"/>
+
+  <!-- Stanley Controller -->
+  <node pkg="controller" exec="stanley_node" name="stanley" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/stanley.yaml"/>
+    <param name="odom_topic" value="$(var odom_topic)"/>
+  </node>
+
+</launch>

@@ -1,0 +1,61 @@
+/**:
+  ros__parameters:
+    pp_lookahead:      1.0     # fallback fixed lookahead [m]
+    pp_wheelbase:      0.33    # F1TENTH chassis, do NOT change [m]
+    pp_max_steer:      0.4     # mechanical steering limit [rad] (~23°)
+    control_rate_hz:   50.0    # control loop rate [Hz]
+    pp_speed_boost:    1.2     # 1.5→1.2: 부스트 배율 낮춤
+    pp_clear_dist:     4.0
+    pp_straight_kappa: 0.1
+    pp_v_max_boost:    9.0     # 9.0→7.5: 최고속 상한 낮춤
+
+    # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
+    pp_lookahead_gain: 0.35
+    pp_lookahead_min:  0.8
+    pp_lookahead_max:  2.5
+
+    # Curvature feedforward
+    pp_ff_gain:        0.5     # 0.0 = off, 1.0 = full feedforward
+
+    # CTE-adaptive lookahead shrink
+    pp_cte_gain:       1.0
+
+    pp_Kp_cte:         0.0
+    pp_K_heading:      0.10    # 약하게만 켬
+
+    # [v3] Steering rate limiter
+    pp_steer_rate_max: 1.5     # 0.5는 너무 느려서 경로 이탈 — 복원
+
+    # [v5] 2-stage kappa 속도 제한
+    pp_preview_n:      65      # 50→65: 11m 앞 탐색 → 코너 더 일찍 감지
+    pp_preview_blend:  0.0     # 미사용 (kappa 기반으로 교체)
+
+    # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
+    pp_kappa_lookahead_gain: 1.5
+
+    # [v5] 2-stage kappa speed cap
+    # 되돌리려면: pp_a_lat_max=2.5, pp_alat_far_factor=3.0, pp_k_v_cte=0.8
+    pp_a_lat_max:       2.5
+    pp_alat_far_factor: 2.5    # 3.0→2.5: FAR 감속 더 일찍·강하게
+    pp_alat_near_n:     27     # 4.5m 앞까지 직선이어야 부스트 + 코너 4.5m 전 하드 캡
+
+    # [v6] CTE derivative damping
+    pp_Kd_cte:          0.05
+
+    # [v6] Behind kappa check: 코너 탈출 직후 부스트 방지
+    #   뒤 N개 waypoint 중 코너가 있으면 boost 차단
+    #   직선 중간에서는 뒤도 직선이라 랩타임 손해 없음
+    pp_alat_behind_n:   10   # 최소한의 댐핑만
+
+    # [v6] Target heading feedforward
+    pp_K_heading_target: 0.0   # 끔 (오버슈팅 기여)
+
+    # [v6] Speed-adaptive K_heading 기준 속도
+    pp_v_heading_ref:    3.5
+
+    pp_a_lat_steer: 25.0
+
+    pp_k_v_cte: 0.8
+
+    # [v4] Global speed scale
+    pp_v_scale: 1.0

@@ -24,7 +24,7 @@
     <arg name="vehicle_config" value="$(var vehicle_config)"/>
     <arg name="map"            value="$(var map)"/>
     <arg name="use_estop"      value="$(var use_estop)"/>
-    
+
   </include>
 
   <!-- ================================================================
@@ -103,9 +103,10 @@
       <!-- <let name="maps_dir" value="$(find-pkg-prefix stack_master)/../../src/creating_autonomous_car/stack_master/maps"/> -->
       <let name="pbstream_file" value="$(var maps_dir)/$(var map)/$(var map).pbstream"/>
 
-      <!-- Cartographer configuration -->
+      <!-- Cartographer configuration: sim uses localization_2d_sim.lua (no IMU, publish TF) -->
       <let name="cartographer_config_dir" value="$(find-pkg-share stack_master)/config"/>
-      <let name="lua_file" value="localization_2d.lua"/>
+      <let name="lua_file" value="localization_2d.lua"     unless="$(var sim)"/>
+      <let name="lua_file" value="localization_2d_sim.lua" if="$(var sim)"/>
 
       <!-- Cartographer Node (Localization) -->
       <node pkg="cartographer_ros" exec="cartographer_node"

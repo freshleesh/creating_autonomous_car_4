@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    # ── timing ──────────────────────────────────────────────────────────────
+    control_rate_hz:       50.0    # control loop [Hz]
+
+    # ── vehicle ─────────────────────────────────────────────────────────────
+    stanley_wheelbase:     0.33    # F1TENTH chassis [m]
+    stanley_max_steer:     0.4     # mechanical steering limit [rad]
+    stanley_max_speed:     8.0     # hard speed cap [m/s]
+    stanley_speed_boost:   1.2     # multiplier on waypoint vx_mps
+
+    # ── Stanley gains ────────────────────────────────────────────────────────
+    # stanley_k     : base cross-track gain
+    #                 raise → tracks line tighter / lower → less oscillation on straights
+    # stanley_ks    : softening term — prevents div/0 at standstill, keep 0.5~1.0
+    # stanley_k_vel : adaptive-k coefficient — k_eff = k / (1 + k_vel * v)
+    #                 raise → more gain reduction at high speed (less oscillation at 8 m/s)
+    stanley_k:             1.0
+    stanley_ks:            0.5
+    stanley_k_vel:         0.5
+
+    # ── PD term (set kd > 0 only after tuning k and k_vel first) ────────────
+    # stanley_kd        : derivative gain (0 = disabled)
+    # stanley_cte_alpha : LPF coefficient for CTE derivative (0~1, higher = more smoothing)
+    #                     must keep >0.5 to suppress lidar noise
+    stanley_kd:            0.0
+    stanley_cte_alpha:     0.8
+
+    # ── speed limiting ───────────────────────────────────────────────────────
+    # v_max = sqrt(a_lat_max / |κ|)   (physics: a_lat = v² · κ)
+    # lower a_lat_max → slower in corners, safer at 8 m/s
+    stanley_a_lat_max:     3.0     # [m/s²]

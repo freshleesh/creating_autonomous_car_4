@@ -1,0 +1,21 @@
+/**:
+  ros__parameters:
+    pp_lookahead:      1.2    # fallback fixed lookahead [m] (unused when adaptive is on)
+    pp_wheelbase:      0.33   # F1TENTH chassis, do NOT change [m]
+    pp_max_steer:      0.4    # mechanical steering limit [rad] (~23°)
+    control_rate_hz:   50.0   # control loop rate, matches /vesc/odom [Hz]
+    pp_speed_boost:    1.2    # speed multiplier on clear straights
+    pp_clear_dist:     3.0    # obstacle-free distance to trigger boost [m]
+    pp_straight_kappa: 0.1    # max |kappa| to consider straight [rad/m]
+    pp_v_max_boost:    7.0    # boosted speed cap [m/s]
+    # Speed-adaptive lookahead: L_f = clip(gain * v, min, max)
+    pp_lookahead_gain: 0.25   # tune up → smoother/faster, down → tighter tracking
+    pp_lookahead_min:  1.0    # minimum L_f [m]
+    pp_lookahead_max:  2.5    # maximum L_f [m]
+    # Curvature feedforward
+    pp_ff_gain:        0.3    # 0.0 = off, 1.0 = full feedforward
+    # CTE-adaptive lookahead: L_f = clip(gain*v / (1 + cte_gain*|CTE|), min, max)
+    pp_cte_gain:          0.5   # 이탈 시 L_f 감소 강도
+    # Direct error feedback
+    pp_Kp_cte:            0.0   # PP 기하학과 이중교정 → 진동 원인, 제거
+    pp_K_heading:         0.1   # 작게 유지, 크면 진동

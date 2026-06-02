@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="map" description="Map name (folder in stack_master/maps/)"/>
+  <arg name="sim" default="false"/>
+
+  <!-- Waypoint Publisher: reads global_waypoints.csv, publishes /global_waypoints -->
+  <node pkg="planner" exec="waypoint_publisher" name="waypoint_publisher" output="screen">
+    <param name="map_name" value="$(var map)"/>
+  </node>
+
+  <!-- Pure Pursuit Controller v4 -->
+  <node pkg="controller" exec="pp_v6_node" name="pp" output="screen">
+    <param from="$(find-pkg-share stack_master)/config/ppc_v6.yaml"/>
+  </node>
+
+</launch>

@@ -53,17 +53,20 @@ def generate_launch_description():
         'sim.yaml')
 
     config_dict = yaml.safe_load(open(sim_setup_params, 'r'))
-    has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
+    bridge_ros_params = config_dict['bridge']['ros__parameters']
+    has_opp = bridge_ros_params['num_agent'] > 1
 
     bridge_node = Node(
         package='f1tenth_gym_ros',
         executable='gym_bridge',
         name='bridge',
-        parameters=[sim_setup_params,
-                    {'map_path': map_yaml_path},
-                    {'sim_params': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim_params.yaml')},
-                    {'ego_odom_topic': ego_odom_topic},
-                    {'publish_tf': publish_tf}],
+        parameters=[
+            bridge_ros_params,           # all params from sim.yaml passed as dict (bypass yaml name-matching)
+            {'map_path': map_yaml_path},
+            {'sim_params': os.path.join(get_package_share_directory('stack_master'), 'config', 'SIM', 'sim_params.yaml')},
+            {'ego_odom_topic': ego_odom_topic},
+            {'publish_tf': publish_tf},
+        ],
         remappings=[('/initialpose', '/sim/initialpose')]
     )
     rviz_node = Node(

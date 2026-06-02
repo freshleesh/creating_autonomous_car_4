@@ -40,7 +40,7 @@ bridge:
 
     # laserscan parameters
     scan_fov: 4.7
-    scan_beams: 2160
+    scan_beams: 1080
 
     # map parameters
     map_img_ext: '.png'

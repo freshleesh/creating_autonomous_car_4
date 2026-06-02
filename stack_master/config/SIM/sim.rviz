@@ -117,8 +117,8 @@ Visualization Manager:
           Axis: X
           Channel Name: intensity
           Class: rviz_default_plugins/LaserScan
-          Color: 255; 255; 255
-          Color Transformer: Intensity
+          Color: 0; 255; 0
+          Color Transformer: FlatColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -128,10 +128,10 @@ Visualization Manager:
           Min Intensity: 0.21612448990345
           Name: Ego Scan
           Position Transformer: XYZ
-          Selectable: true
-          Size (Pixels): 3
-          Size (m): 0.05000000074505806
-          Style: Flat Squares
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.019999999552965164
+          Style: Points
           Topic:
             Depth: 5
             Durability Policy: Volatile
@@ -223,7 +223,7 @@ Visualization Manager:
               Scale: 1
               Value: true
             Value: true
-          Enabled: true
+          Enabled: false
           Keep: 1
           Name: Odometry
           Position Tolerance: 0.10000000149011612
@@ -269,10 +269,10 @@ Visualization Manager:
           Min Intensity: 0
           Name: Opponent Scan
           Position Transformer: XYZ
-          Selectable: true
-          Size (Pixels): 3
-          Size (m): 0.05000000074505806
-          Style: Flat Squares
+          Selectable: false
+          Size (Pixels): 2
+          Size (m): 0.019999999552965164
+          Style: Points
           Topic:
             Depth: 5
             Durability Policy: Volatile
@@ -309,11 +309,11 @@ Visualization Manager:
           Update Interval: 0
           Value: true
           Visual Enabled: true
-      Enabled: true
+      Enabled: false
       Name: Opponent Robot
     - Class: rviz_default_plugins/InteractiveMarkers
       Enable Transparency: true
-      Enabled: true
+      Enabled: false
       Interactive Markers Namespace: /obstacle_controls
       Name: InteractiveMarkers
       Show Axes: false

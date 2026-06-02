@@ -4,7 +4,7 @@ ekf_localization:
     frequency     : 100.0
     sensor_timeout: 0.1
     two_d_mode    : true
-    publish_tf    : true  # Cartographer already publishes map→odom TF
+    publish_tf    : false # gym_bridge already publishes map→base_link; EKF must not compete
 
     odom_frame     : base_link
     base_link_frame: base_link

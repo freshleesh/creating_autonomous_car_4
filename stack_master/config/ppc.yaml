@@ -1,8 +1,45 @@
-pp:
+/**:
   ros__parameters:
-    control_rate_hz:  50.0
-    estop_min_dist:   0.5    # [m]
-    estop_angle_deg: 30.0    # [deg]
-    pp_lookahead:     1.0    # [m]
-    pp_wheelbase:     0.33   # [m]
-    pp_max_steer:     0.4    # [rad]
+    pp_lookahead:      1.0     # fallback fixed lookahead [m]
+    pp_wheelbase:      0.33    # F1TENTH chassis, do NOT change [m]
+    pp_max_steer:      0.4     # mechanical steering limit [rad] (~23°)
+    control_rate_hz:   50.0    # control loop rate [Hz]
+    pp_speed_boost:    1.2     # speed multiplier on clear straights
+    pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
+    pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
+    pp_v_max_boost:    9.0     # boosted speed cap [m/s]
+
+    # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
+    pp_lookahead_gain: 0.35    # tune up → smoother/faster, down → tighter tracking
+    pp_lookahead_min:  0.8     # minimum L_f [m]
+    pp_lookahead_max:  2.5     # maximum L_f [m]
+
+    # Curvature feedforward
+    pp_ff_gain:        0.5     # 0.0 = off, 1.0 = full feedforward
+
+    # CTE-adaptive lookahead shrink (bigger = more aggressive shrink when off-path)
+    pp_cte_gain:       2.0
+
+    # Direct error feedback — start with 0, tune up carefully to avoid oscillation
+    pp_Kp_cte:         0.0     # lateral error gain [rad/m]
+    pp_K_heading:      0.0     # heading error gain [rad/rad]
+
+    # [v3] Steering rate limiter [rad/s] — lower = smoother, higher = more responsive
+    pp_steer_rate_max: 1.5
+
+    # [v3] Preview speed blending — pre-brake before corners
+    pp_preview_n:      20      # waypoints ahead to scan for min speed
+    pp_preview_blend:  0.6     # 0.0 = target speed only, 1.0 = preview min only
+
+    # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
+    #   larger = shorter lookahead at corners = tighter tracking but may oscillate
+    pp_kappa_lookahead_gain: 1.5
+
+    # [v3] Lateral acceleration cap: speed ≤ sqrt(a_lat_max / kappa)
+    #   physics-based hard limit — lower = safer corners, higher = faster
+    pp_a_lat_max: 2.5
+
+    # [v3] Global speed scale — trajectory optimizer ran at a_lat=6 m/s² (too fast for PP)
+    #   0.65 → 5.4 m/s becomes 3.5 m/s at corners (PP can actually track this)
+    #   tune: 0.8 if still too slow, 0.5 if still hitting walls
+    pp_v_scale: 0.65

@@ -26,6 +26,7 @@ import numpy as np
 import csv
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from planner.track_bounds import TrackBounds
 
 
@@ -41,10 +42,8 @@ class WaypointPublisher(Node):
             self.get_logger().error('[WaypointPublisher] map_name parameter is required!')
             return
 
-        # Resolve source map directory from __file__ (realpath resolves symlinks)
-        # __file__: .../creating_autonomous_car/planner/planner/waypoint_publisher.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        self.map_dir = os.path.join(
+            get_package_share_directory('stack_master'), 'maps', self.map_name)
         self.get_logger().info(f'[WaypointPublisher] map_dir: {self.map_dir}')
 
         # Load track boundaries for d_right/d_left computation

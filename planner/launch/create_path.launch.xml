@@ -17,11 +17,13 @@
     <param name="output_csv" value="$(var output_csv)"/>
   </node>
 
-  <!-- Trajectory Optimizer Node (placeholder) -->
+  <!-- Trajectory Optimizer Node -->
   <node pkg="planner" exec="trajectory_optimizer" name="trajectory_optimizer" output="screen"
         if="$(var optimize)">
     <param from="$(var optimizer_config)"/>
     <param name="map_name" value="$(var map)"/>
+    <param name="input_csv" value="$(var output_csv)"/>
+    <param from="$(find-pkg-share stack_master)/config/trajectory_optimizer.yaml"/>
   </node>
 
 </launch>
