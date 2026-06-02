@@ -801,8 +801,14 @@ class LocalPlanning(Node):
         return float(st['cs'](s_abs))
 
     def _build_passthrough(self):
-        """Raceline (d_target = 0) with ego cosine blend."""
-        return self._make_local_wpnts(target_fn=lambda s: 0.0)
+        """Raceline (d_target = 0) published as-is (no ego blend).
+
+        Ego-blend made the near-field reference follow the car's current
+        lateral position, which zeroed out PP's CTE and let the car cut the
+        inside of corners indefinitely. Publishing the pure raceline keeps CTE
+        meaningful so PP's Kp_cte pulls the car back onto the line.
+        """
+        return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False)
 
     def _build_trailing(self):
         """Passthrough + trailing PD speed cap."""

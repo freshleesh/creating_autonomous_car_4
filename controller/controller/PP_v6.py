@@ -71,6 +71,12 @@ PARAMS = {
     # [v3] Global speed scale: multiply ALL waypoint vx by this factor
     #   Trajectory optimizer targets a_lat=6 m/s²; PP needs ~60-70% of that to track
     'pp_v_scale':         0.65,  # 1.0 = use optimizer speed as-is, 0.65 = 35% slower
+    # [v6] Startup / low-speed stability. Below v_track_min the adaptive lookahead
+    #   collapses to its minimum and the CTE gains slam the wheel → big initial
+    #   left-right swing. Below this speed we raise the lookahead floor and fade
+    #   in the CTE correction. No effect above v_track_min, so cornering is unchanged.
+    'pp_v_track_min':       1.5,   # [m/s] speed at which full control authority is reached
+    'pp_startup_lookahead': 1.8,   # [m] lookahead floor at standstill
 }
 
 
@@ -112,6 +118,8 @@ class PPNode(Node):
         self.a_lat_steer          = p('pp_a_lat_steer')
         self.k_v_cte              = p('pp_k_v_cte')
         self.v_scale              = p('pp_v_scale')
+        self.v_track_min          = p('pp_v_track_min')
+        self.startup_lookahead    = p('pp_startup_lookahead')
 
         self.scan      = None
         self.odom      = None
@@ -187,23 +195,45 @@ class PPNode(Node):
         cte         = float(local_y[nearest_idx])
         kappa_near  = float(self.waypoints[nearest_idx].kappa_radpm)
 
-        # Adaptive lookahead — shrinks with CTE (recovery) AND curvature (corner entry)
-        # Key: kappa_near > 0 at corners BEFORE the car deviates → L_f shrinks early
+        # Corner preview: max |kappa| over the path within lookahead_max ahead.
+        # Using kappa_near (curvature at the car) only shrinks the lookahead once
+        # the car is ALREADY in the corner. Scanning ahead lets it shrink as we
+        # APPROACH the corner, so we don't carry a long (corner-cutting) lookahead
+        # into the turn.
+        kappa_corner = abs(kappa_near)
+        acc_k  = 0.0
+        prev_k = nearest_idx
+        for step in range(1, N):
+            idx = (nearest_idx + step) % N
+            acc_k += float(np.hypot(wp_xy[idx, 0] - wp_xy[prev_k, 0],
+                                    wp_xy[idx, 1] - wp_xy[prev_k, 1]))
+            kappa_corner = max(kappa_corner,
+                               abs(float(self.waypoints[idx].kappa_radpm)))
+            if acc_k >= self.lookahead_max:
+                break
+            prev_k = idx
+
+        # Adaptive lookahead — shrinks with CTE (recovery) AND upcoming curvature.
+        # kappa_corner > 0 BEFORE the car reaches the corner → L_f shrinks early.
         lookahead = float(np.clip(
             self.lookahead_gain * v / (
                 1.0
                 + self.cte_gain * abs(cte)
-                + self.kappa_lookahead_gain * abs(kappa_near)
+                + self.kappa_lookahead_gain * kappa_corner
             ),
             self.lookahead_min,
             self.lookahead_max,
         ))
 
-        # 3) target waypoint
-        err = np.abs(dists - lookahead)
-        err[~ahead] = np.inf
+        # Startup / low-speed stability: at v≈0 the lookahead above collapses to
+        # its minimum (twitchy) and the CTE gains slam the wheel. Below
+        # v_track_min, raise the lookahead floor and fade in the CTE correction so
+        # the car eases onto the line. low_speed_scale: 0 at standstill → 1 at v_track_min.
+        low_speed_scale = float(np.clip(v / max(self.v_track_min, 1e-3), 0.0, 1.0))
+        lookahead = max(lookahead, self.startup_lookahead * (1.0 - low_speed_scale))
 
-        if np.all(np.isinf(err)):
+        # 3) target waypoint
+        if not np.any(ahead):
             # [v3] No ahead waypoints: steer toward nearest using heading correction
             #      only — skip PP geometry to avoid wrong-direction steering.
             psi_ref     = float(self.waypoints[nearest_idx].psi_rad)
@@ -220,8 +250,24 @@ class PPNode(Node):
                 f'[PP] no ahead waypoints, heading recovery: err={math.degrees(heading_err):.1f}°',
                 throttle_duration_sec=0.5)
             return delta, 0.8
-        else:
-            target_idx = int(np.argmin(err))
+
+        # Walk FORWARD along the path from the nearest waypoint, accumulating
+        # arc length, and take the first point at least `lookahead` along the
+        # PATH. Selecting by raw straight-line distance (argmin|dist - L|) could
+        # snap the target onto a point on the far side of the track that happens
+        # to sit ~L away on a tight curve, flinging the lookahead across the
+        # track and cutting the corner. Arc-length-forward can never jump across.
+        target_idx = nearest_idx
+        acc  = 0.0
+        prev = nearest_idx
+        for step in range(1, N):
+            idx = (nearest_idx + step) % N
+            acc += float(np.hypot(wp_xy[idx, 0] - wp_xy[prev, 0],
+                                  wp_xy[idx, 1] - wp_xy[prev, 1]))
+            target_idx = idx
+            if acc >= lookahead:
+                break
+            prev = idx
 
         self._publish_lookahead(self.waypoints[target_idx])
 
@@ -249,7 +295,7 @@ class PPNode(Node):
 
         # [v6] Speed-adaptive K_heading
         speed_scale = float(np.clip(v / max(self.v_heading_ref, 0.1), 1.0, 2.0))
-        delta += self.K_heading * speed_scale * heading_err + self.Kp_cte * cte
+        delta += self.K_heading * speed_scale * heading_err + self.Kp_cte * low_speed_scale * cte
 
         # [v6] Target heading feedforward (target_idx와 동일 기준이 됐으므로 0 권장)
         psi_target_ff   = float(self.waypoints[target_idx].psi_rad)
@@ -265,7 +311,7 @@ class PPNode(Node):
             raw_dcte = (cte - self._prev_cte) / self._dt
             dcte_dt  = float(np.clip(raw_dcte, -10.0, 10.0))  # ±10 m/s 클램프
         self._prev_cte = cte
-        delta += self.Kd_cte * dcte_dt
+        delta += self.Kd_cte * low_speed_scale * dcte_dt
 
         delta = max(-self.max_steer, min(self.max_steer, delta))
 

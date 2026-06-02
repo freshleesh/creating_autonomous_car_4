@@ -10,19 +10,24 @@
     pp_v_max_boost:    9.0     # boosted speed cap [m/s]
 
     # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
-    pp_lookahead_gain: 0.18    # lowered again: shorter lookahead → tracks the line tighter, less corner cut
-    pp_lookahead_min:  0.6     # lowered: tight tracking at low speed / in corners
-    pp_lookahead_max:  1.1     # lowered from 1.6: long lookahead chord-cuts the inside of corners
+    pp_lookahead_gain: 0.35    # restored to stable baseline (short lookahead caused oscillation)
+    pp_lookahead_min:  0.5     # lowered: let lookahead get genuinely short in corners (startup guard floors it at standstill)
+    pp_lookahead_max:  1.8     # sweet spot: shorter than 2.5 (less geometric corner cut) but above 1.1 (no oscillation)
 
-    # Curvature feedforward
-    pp_ff_gain:        0.15    # lowered again: was adding steer into the corner on top of geometry (inside cut)
+    # Curvature feedforward. PP geometry (target on the curve) ALREADY commands the
+    # curve's steering, so any ff>0 double-counts it → over-steer → cuts the inside
+    # of corners. Set to 0 and let pure-pursuit geometry track the line.
+    pp_ff_gain:        0.0
 
-    # CTE-adaptive lookahead shrink (bigger = more aggressive shrink when off-path)
-    pp_cte_gain:       2.0
+    # CTE-adaptive lookahead shrink. Counterproductive: when far from the line
+    # this SHORTENS the lookahead → twitchy/oscillating approach. 0 keeps the
+    # lookahead long off-line → smooth convergence (corner shrink uses kappa instead).
+    pp_cte_gain:       0.0
 
     # Direct error feedback — start with 0, tune up carefully to avoid oscillation
-    pp_Kp_cte:         0.6     # raised again: strong pull back ONTO the line (kills inside cut)
+    pp_Kp_cte:         0.0     # restored to 0: the added CTE feedback loop was a main oscillation source
     pp_K_heading:      0.0     # heading error gain [rad/rad]
+    pp_Kd_cte:         0.05    # restored to baseline (no aggressive D needed once Kp_cte loop is gone)
 
     # [v6] Target-heading feedback. PP geometry already aims at target_idx, so this
     #   double-steers toward the forward (inside) heading. Code comment recommends 0;
@@ -38,13 +43,23 @@
 
     # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
     #   larger = shorter lookahead at corners = tighter tracking but may oscillate
-    pp_kappa_lookahead_gain: 2.5    # raised: shrink lookahead harder in corners → hugs the line, not the apex
+    pp_kappa_lookahead_gain: 4.0    # raised hard: shrink lookahead much more in corners → tighter, less cut
 
     # [v3] Lateral acceleration cap: speed ≤ sqrt(a_lat_max / kappa)
     #   physics-based hard limit — lower = safer corners, higher = faster
-    pp_a_lat_max: 2.5
+    pp_a_lat_max: 6.0     # match optimizer's a_lat so the curvature cap doesn't slow corners below the planned profile
+
+    # [v3] FAR (preview) soft cap: speed ≤ sqrt(a_lat_max * far_factor / kappa_far).
+    #   Larger = looser = brakes later/abruptly at the near cap. Lowered from 3.0
+    #   so the preview cap engages earlier → gentle pre-braking, smooth corner entry.
+    pp_alat_far_factor: 1.8
+
+    # [v4] CTE-proportional speed reduction: speed /= (1 + k_v_cte * cte²)
+    #   (not in this file before → used code default 0.8, which over-slowed when
+    #    the car cut the inside of a corner; lowered now that the cut is reduced)
+    pp_k_v_cte: 0.3
 
     # [v3] Global speed scale — trajectory optimizer ran at a_lat=6 m/s² (too fast for PP)
     #   0.65 → 5.4 m/s becomes 3.5 m/s at corners (PP can actually track this)
     #   tune: 0.8 if still too slow, 0.5 if still hitting walls
-    pp_v_scale: 0.65
+    pp_v_scale: 0.85    # raised from 0.65: this global derate was the real corner-speed limiter; follow optimizer profile closer
