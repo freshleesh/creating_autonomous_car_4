@@ -66,7 +66,7 @@ options = {
   landmarks_sampling_ratio = 1.,
 }
 MAP_BUILDER.use_trajectory_builder_2d = true
-MAP_BUILDER.num_background_threads = 4
+MAP_BUILDER.num_background_threads = 400
 
 TRAJECTORY_BUILDER_2D.min_range = 0.12
 TRAJECTORY_BUILDER_2D.max_range = 30.
