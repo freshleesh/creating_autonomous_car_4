@@ -5,6 +5,7 @@ import csv
 import numpy as np
 import osqp
 from scipy import sparse
+from scipy.interpolate import CubicSpline
 
 import rclpy
 from rclpy.node import Node
@@ -167,7 +168,12 @@ class TrajectoryOptimizer(Node):
         #   only restrained by the inner/outer wall bounds, then crank it
         #   up x10 in polishing to remove any zig-zag the aggressive line
         #   left behind.
-        lambda_smooth = 0.10      # raised: pulls line toward center, less apex dive (gentler corners)
+        # Lowered to ~anti-jitter level only. The final Step-6 cubic-spline
+        # resample now handles smoothing, so we no longer need a strong 2nd-
+        # difference penalty here. A large lambda_smooth pulls the line toward
+        # the centerline and prevents the apex dive — exactly the "corners too
+        # wide" symptom — so we keep it just high enough to condition the QP.
+        lambda_smooth = 0.02
 
         # Curvature-jerk operator on alpha (4th difference). alpha's 4th diff
         # is proportional to kappa's 2nd diff, i.e. the rate-of-change of
@@ -186,7 +192,20 @@ class TrajectoryOptimizer(Node):
 
         # Shortest-path term (Option D).
         # L² = Σ|Δr|², quadratic in da → adds to H and g as λ_short · L².
-        lambda_short = 0.08
+        # DISABLED: the shortest-path bias cuts corners (pulls the line to the
+        # inside apex with a small radius), which RAISES peak curvature and
+        # lowers corner speed. Pure curvature² minimization spreads the
+        # curvature instead → lower peak κ, higher corner speed. This is the
+        # core of phase A.
+        lambda_short = 0.0
+
+        # Speed-weighted curvature (min-time approximation). Applied during the
+        # racing iterations only; polishing then runs pure curvature² to clean
+        # up. See the detailed note where wc is built. Set USE_TIME_WEIGHT to
+        # False to fall back to plain geometric min-curvature.
+        USE_TIME_WEIGHT = True
+        TIME_WEIGHT_CAP = 9.0     # cap on (v_max/v_local)² so one slow apex
+                                  # cannot dominate the entire objective
 
         # Asymmetric wall margins (curvature-aware apex room).
         # --------------------------------------------------
@@ -220,10 +239,47 @@ class TrajectoryOptimizer(Node):
         ksign = np.sign(np.where(np.abs(kappa_c) > 1e-3, kappa_c,
                                   np.roll(kappa_c, -1) + np.roll(kappa_c, 1)))
 
+        # ---- Long-straight curvature penalty (predict next corner) ---------
+        # Min-curvature spreads a fixed lateral shift over the WHOLE straight
+        # (a long gentle S) because spreading lowers Σκ². Visually that is the
+        # "drift to center and back out" on straights. A racer instead drives
+        # the straight as a STRAIGHT CHORD (zero curvature, max speed / shortest
+        # distance) and compresses all the lateral repositioning into the
+        # corner zones (out–in–out).
+        #
+        # To force that, we measure how far each point is from the nearest
+        # corner (along the track) and multiply the curvature weight UP on long
+        # straights. Curvature there becomes expensive, so the solver flattens
+        # the straight and pushes the transition into the corner entry/exit,
+        # where the weight drops back to ~1 and the line is free to move. The
+        # corner mask comes from the centerline curvature, so this "looks
+        # ahead" to the next corner purely from track geometry.
+        is_corner = turn > 0.20
+        ds_u = target_ds
+        big  = N * ds_u
+        dist_corner = np.full(N, big)
+        d = big
+        for i in range(2 * N):                 # forward sweep (wrap-around)
+            idx = i % N
+            d = 0.0 if is_corner[idx] else d + ds_u
+            if d < dist_corner[idx]:
+                dist_corner[idx] = d
+        d = big
+        for i in range(2 * N - 1, -1, -1):     # backward sweep (wrap-around)
+            idx = i % N
+            d = 0.0 if is_corner[idx] else d + ds_u
+            if d < dist_corner[idx]:
+                dist_corner[idx] = d
+        STRAIGHT_REF   = 6.0    # [m] distance-from-corner where straightening saturates
+        STRAIGHT_BOOST = 5.0    # max extra curvature weight on a long clear straight
+        straight_w = 1.0 + STRAIGHT_BOOST * np.clip(dist_corner / STRAIGHT_REF, 0.0, 1.0)
+
         # Apex still gets a tighter margin than the outer side, but not
         # razor-thin — 5 cm felt too risky in sim. 10 cm at the apex still
         # gives noticeably more "inside" room than a symmetric layout.
-        margin_inner = 0.18      # raised: keep the line off the inner wall (less apex hugging)
+        margin_inner = 0.32      # raised 0.24→0.32: pull the racing line well off the inner wall so that
+                                 #   PP's inside-cutting (which we now ACCEPT) still leaves a safe buffer to
+                                 #   the inner corner. Also rounds the line → lower peak curvature → faster corners.
         margin_outer = safety_margin + 0.15              # loose outer
         mid = 0.5 * (margin_inner + margin_outer)
 
@@ -263,12 +319,16 @@ class TrajectoryOptimizer(Node):
             entry_bias_s += ebw[j + 9] * np.roll(entry_grad, -j)
             exit_bias_s  += ebw[j + 9] * np.roll(exit_grad,  -j)
 
-        # Inner margin: loosened during entry, tightened during exit.
-        entry_extra = 0.05      # [m] extra outer push at corner entry
-        exit_extra  = 0.06      # [m] extra inner pull at corner exit
+        # Inner margin: late-apex entry/exit bias DISABLED for phase A.
+        # These hacks were pushing the line outward at corner entry (part of
+        # the "corners too wide" symptom). We first want to see the clean,
+        # pure min-curvature racing line; re-introduce a small bias later only
+        # if needed.
+        entry_extra = 0.0       # [m] extra outer push at corner entry (disabled)
+        exit_extra  = 0.0       # [m] extra inner pull at corner exit (disabled)
         m_in_eff = m_in_eff + entry_extra * entry_bias_s \
                             - exit_extra  * exit_bias_s
-        m_in_eff = np.clip(m_in_eff, 0.15, margin_outer)   # raised floor: never razor-thin on the inside
+        m_in_eff = np.clip(m_in_eff, margin_inner, margin_outer)   # floor = margin_inner
 
         # Two-phase budget (tuned via sweep).
         #
@@ -346,6 +406,63 @@ class TrajectoryOptimizer(Node):
             bx = np.roll(xs, -1) - 2.0 * xs + np.roll(xs, 1)
             by = np.roll(ys, -1) - 2.0 * ys + np.roll(ys, 1)
 
+            # ---- Arc-length curvature correction -----------------------------
+            # The plain 2nd-difference above approximates d²r/di² (index
+            # parametrization). The true curvature is d²r/ds² ≈ 2nddiff / ds²,
+            # so on a UNIFORM grid 2nddiff ≈ ds²·κ and minimizing Σ(2nddiff)²
+            # ≈ minimizing Σκ². But the optimized line bunches points on the
+            # inside of corners (ds shrinks there); the uniform assumption
+            # then UNDER-counts curvature exactly at the tightest apex, so the
+            # QP leaves a sharp single-point spike (the "pointy hairpin").
+            # Re-weighting each row by (target_ds/ds_i)² rescales every point
+            # back to a common ds, so the objective is Σκ² regardless of local
+            # spacing — the solver now flattens the apex spike instead of
+            # ignoring it.
+            hf = np.hypot(np.roll(xs, -1) - xs, np.roll(ys, -1) - ys)
+            ds_loc = 0.5 * (hf + np.roll(hf, 1))
+            ds_loc = np.maximum(ds_loc, 0.3 * target_ds)   # clamp → no weight blow-up
+            wc = (target_ds / ds_loc) ** 2                 # ≈1 on uniform spacing
+
+            # ---- Speed-weighted curvature (min-time approximation) -----------
+            # Pure Σκ² minimization gives the GEOMETRIC apex: it refuses to add
+            # the entry/exit "setup S" that racers use because that S costs
+            # curvature. The result is a line that returns toward the
+            # centerline on straights instead of staying wide to set up the
+            # next corner (the "why does it pull to center then leave" you saw).
+            #
+            # Min-TIME wants the opposite: maximise the radius at the SLOW apex
+            # (the lap-time-limiting point) even at the cost of more curvature
+            # on the fast entry, because lap time ∝ ∫ds/v and v is grip-limited
+            # at the apex. Weighting each curvature row by (v_max / v_local)²
+            # does exactly this — slow apex points are penalised hard, so the
+            # solver opens the corner by using the full entry/exit width
+            # (out–in–out), while fast straights (weight≈1) stay free to carry
+            # the setup curvature. This recovers the racing line without a full
+            # dynamic min-time NLP.
+            # Speed (time) weight is DYNAMIC — it recomputes v from the current
+            # curvature every iteration. Run through the polishing phase it
+            # feeds back on itself across the re-linearizations and diverges
+            # (twisty maps blow up). So it stays in the racing phase only, as a
+            # gentle apex-opening warm start.
+            if USE_TIME_WEIGHT and not in_polishing:
+                _, k_cur = TrajectoryOptimizer._geom(xs, ys)
+                v_cur = np.sqrt(a_lat_max / np.maximum(np.abs(k_cur), 1e-6))
+                v_cur = np.clip(v_cur, 0.2 * v_max, v_max)
+                w_spd = np.minimum((v_max / v_cur) ** 2, TIME_WEIGHT_CAP)
+                wc = wc * w_spd
+
+            # Long-straight penalty is STATIC (fixed from the centerline
+            # geometry), so it is stable to apply on EVERY iteration — polishing
+            # included. This matters: if it were racing-only, the 15
+            # pure-curvature² polish iters would re-spread curvature back onto
+            # the straights and undo the straightening. Applied throughout, the
+            # straights stay flat chords and the lateral transition lives in the
+            # corner zones (out–in–out).
+            wc = wc * straight_w
+
+            Ax *= wc[:, None]; bx *= wc
+            Ay *= wc[:, None]; by *= wc
+
             # ---- Length operator (delta = forward 1st diff of r) -------------
             # Δr_i = (current_{i+1} - current_i) + (n_{i+1} da_{i+1} - n_i da_i)
             # Lx[i, i] = -nx_i ; Lx[i, i+1] = nx_{i+1}  (wrap-around)
@@ -414,9 +531,17 @@ class TrajectoryOptimizer(Node):
             if (not in_polishing) and np.max(np.abs(da)) < 5e-4:
                 race_converged = True
 
-        # --- Step 5. recover optimal raceline coordinates ------------------
-        x_opt, y_opt = xs, ys
-        a = a_total
+        # --- Step 5 + 6. recover line, then dedupe + cubic-spline resample -
+        # After the QP iterations, points are bunched on the inside of corners
+        # (lateral moves compress the arc spacing there). The curvature
+        # operator and _geom both assume UNIFORM ds, so on the clustered
+        # points _geom reports fake curvature spikes — that is the "pointy
+        # corner" symptom. We resample the optimized line onto uniform arc
+        # length with a periodic cubic spline before computing psi/kappa.
+        # The alpha offset and the (resampled) centerline half-widths are
+        # carried along so the remaining wall clearance stays consistent.
+        x_opt, y_opt, a, w_r_r, w_l_r = TrajectoryOptimizer._resample_closed(
+            xs, ys, target_ds, a_total, w_r_r, w_l_r)
 
         # --- Step 7. heading & curvature -----------------------------------
         psi, kappa = TrajectoryOptimizer._geom(x_opt, y_opt)
@@ -435,22 +560,40 @@ class TrajectoryOptimizer(Node):
         #       remaining stair-steps so the throttle/brake commands flow
         #       smoothly through the corner.
         v_top      = v_max
-        a_accel    = 0.40 * a_long_max          # GENTLER exit accel → less outward "fling"
-        a_brake    = 0.40 * a_long_max          # SOFTER, EARLIER braking
-        hold_dist  = 6.0                        # [m] longer post-corner speed hold
-                                                #     so the car doesn't ramp up too soon
-                                                #     and get thrown into the outer wall
+        a_accel    = 0.70 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
+        a_brake    = 0.70 * a_long_max          # [v14] RAISED 0.45→0.70 to brake LATER. Counter-intuitive
+                                                #   but physical: braking-zone length = Δv²/(2·a_brake), so a
+                                                #   LOWER a_brake stretches the slow-down EARLIER. The car
+                                                #   "brakes too early" precisely because a_brake was low. A
+                                                #   higher a_brake = short, late slow-down held near the corner.
+                                                #   (Trade: the braking itself is firmer — opposite of "gentler".)
+        hold_dist  = 0.5                        # [revert v10→v8.1] small post-corner hold restored:
+                                                #     a touch of corner-speed hold past the apex = gentler
+                                                #     exit, less over-speed into the next section.
 
         N_pts = len(x_opt)
         ds = np.hypot(np.roll(x_opt, -1) - x_opt, np.roll(y_opt, -1) - y_opt)
         ds[ds < 1e-6] = 1e-6
-        # Corner-cap bonus: bump corner cap speed up so entries don't feel
-        # like a brick wall — pure-physics cornering limit is conservative,
-        # the racing line has more grip available because the curvature is
-        # spread evenly. Raised from 1.12 to 1.18 so the entry phase loses
-        # less speed.
+        # Corner-cap bonus, now CURVATURE-GRADED.
+        # The pure point-mass limit sqrt(a_lat/κ) is conservative because the
+        # racing line spreads curvature and has grip headroom. How much extra
+        # we dare take depends on how hard the corner is:
+        #   - gentle corners (small |κ|, large radius): plenty of margin → push
+        #     the cap up a lot (cap_mild).
+        #   - severe corners (large |κ|, tight radius): stay close to physics
+        #     (cap_sharp) so we don't ask for grip the tyres don't have.
+        # We blend linearly from cap_mild to cap_sharp as |κ| rises to
+        # KAPPA_HARD, so weak corners speed up the most while hairpins stay
+        # safe.
+        cap_mild   = 1.60       # gentle corners already OK (understeer cancels the cut there)
+        cap_sharp  = 1.40       # [v15] 1.22→1.40 (two steps): TIGHT corners were cutting inside badly
+                                #   (low speed there → little understeer → cut dominates). Raise the
+                                #   tight-corner speed specifically to generate the cancelling understeer.
+        KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
+        t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
+        cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
         vx_corner = np.sqrt(a_lat_max / np.maximum(np.abs(kappa), 1e-6))
-        vx_cap = vx_corner * 1.18
+        vx_cap = vx_corner * cap_factor
 
         # ---- Lookahead-based v_top boost on long clear straights ---------
         # For each point i, walk forward along the raceline accumulating ds
@@ -458,10 +601,13 @@ class TrajectoryOptimizer(Node):
         # or we accumulate `lookahead_max` metres. The longer the clear
         # straight ahead, the higher we let v_top go locally.
         kappa_curve_thresh = 0.10       # [1/m] |κ| above this counts as curving
-        lookahead_max      = 10.0       # [m]   look this far ahead to decide
-        boost_max          = 1.45       # peak boost on a fully clear lookahead
-        # On a short ~1 m clear stretch boost ≈ 1.04 (no speeding up).
-        # On a full ~10 m clear stretch boost ≈ 1.45 (about 30% faster).
+        lookahead_max      = 12.0       # [m]   look this far ahead to decide
+        boost_max          = 1.90       # peak boost on a fully clear lookahead (straights are safe)
+        # Straights are the safe place to be fast, so we push the boost hard.
+        # On a full ~12 m clear stretch the straight target ≈ v_max·1.90.
+        # Short straights won't reach it — the backward (braking) pass caps the
+        # peak to whatever can still be shed before the next corner — so this
+        # is self-limiting and stays safe.
         kappa_abs = np.abs(kappa)
         straight_dist = np.zeros(N_pts)
         for i in range(N_pts):
@@ -527,6 +673,27 @@ class TrajectoryOptimizer(Node):
         vx = np.minimum(vx, vx_s)
         vx = np.maximum(vx, vx_min_floor * 0.95)
 
+        # (6) FINAL braking-limit pass. The post-corner hold (3) and the
+        # Gaussian smoothing (5) both run AFTER the main backward pass (2), and
+        # they can re-introduce local decelerations far steeper than a_brake at
+        # corner-cap edges (measured spikes of >12 m/s² before this pass). Those
+        # are exactly the "braking is too harsh" jolts. Re-apply the braking
+        # limit one more time as the LAST step so the final profile decelerates
+        # no harder than a_brake ANYWHERE → gentle, gradual slow-downs into
+        # corners. (Backward pass only lowers speeds, so it never breaks the
+        # corner caps; it just starts the slow-down a little earlier.)
+        # Sweep DESCENDING so each point is capped against its ALREADY-finalized
+        # successor: the braking limit then propagates all the way back through a
+        # long approach in a single sweep. (An ascending sweep — as the earlier
+        # passes use — only moves the limit back one point per iteration, so long
+        # braking zones stay under-capped and keep steep >a_brake drops.)
+        for _ in range(3):
+            for j in range(N_pts - 1, -1, -1):
+                i = (j + 1) % N_pts
+                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake * ds[j])
+                if vx[j] > v_cap:
+                    vx[j] = v_cap
+
         # --- Step 9. remaining wall clearance ------------------------------
         w_r_new = w_r_r + a
         w_l_new = w_l_r - a
@@ -570,6 +737,30 @@ class TrajectoryOptimizer(Node):
                 np.interp(s_new, s, y_p),
                 np.interp(s_new, s, wr_p),
                 np.interp(s_new, s, wl_p))
+
+    @staticmethod
+    def _resample_closed(x, y, target_ds, *extra):
+        """Periodic cubic-spline resample of a closed (x, y) loop onto uniform
+        arc length. Any `extra` per-point arrays (alpha offset, half-widths,
+        …) are linearly interpolated onto the same grid and returned after
+        the new x, y. De-clusters points bunched on the inside of corners so
+        the centered-difference curvature in _geom stays well conditioned and
+        does not produce fake spikes."""
+        seg = np.hypot(np.diff(x, append=x[0]), np.diff(y, append=y[0]))
+        s = np.concatenate(([0.0], np.cumsum(seg)))
+        L = s[-1]
+        N_new = max(20, int(round(L / target_ds)))
+        s_new = np.linspace(0.0, L, N_new, endpoint=False)
+        # periodic cubic spline needs matching endpoints (closed loop)
+        xp = np.concatenate((x, [x[0]]))
+        yp = np.concatenate((y, [y[0]]))
+        csx = CubicSpline(s, xp, bc_type='periodic')
+        csy = CubicSpline(s, yp, bc_type='periodic')
+        out = [csx(s_new), csy(s_new)]
+        for e in extra:
+            ep = np.concatenate((np.asarray(e), [e[0]]))
+            out.append(np.interp(s_new, s, ep))
+        return out
 
     @staticmethod
     def _geom(x, y):

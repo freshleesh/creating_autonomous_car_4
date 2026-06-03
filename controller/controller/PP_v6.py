@@ -28,6 +28,14 @@ PARAMS = {
     'pp_lookahead_max':   2.5,
     # Curvature feedforward
     'pp_ff_gain':         0.5,
+    # [v7] Understeer / inertia feedforward. At speed the car pushes wide
+    #   (understeer), drifting OUTSIDE the line. Pre-add steering proportional
+    #   to the lateral-accel demand v^2*kappa so the wheel is already turned in
+    #   to counter the push. delta += us_ff_gain * v^2 * kappa_ff
+    'pp_us_ff_gain':      0.0,
+    # [v7] Anticipation: blend curvature at a point this many waypoints ahead
+    #   into the understeer FF, so the wheel leads the corner slightly.
+    'pp_us_ff_preview_n': 8,
     # CTE-adaptive lookahead shrink
     'pp_cte_gain':        2.0,
     # Direct error feedback
@@ -101,6 +109,8 @@ class PPNode(Node):
         self.lookahead_min  = p('pp_lookahead_min')
         self.lookahead_max  = p('pp_lookahead_max')
         self.ff_gain        = p('pp_ff_gain')
+        self.us_ff_gain     = p('pp_us_ff_gain')
+        self.us_ff_preview_n = int(p('pp_us_ff_preview_n'))
         self.cte_gain       = p('pp_cte_gain')
         self.Kp_cte         = p('pp_Kp_cte')
         self.K_heading      = p('pp_K_heading')
@@ -286,6 +296,18 @@ class PPNode(Node):
         # Curvature feedforward
         delta_ff = math.atan(self.wheelbase * kappa_near)
         delta += self.ff_gain * delta_ff
+
+        # [v7] Understeer / inertia feedforward.
+        #   At speed the car pushes wide; pre-steer by the lateral-accel demand
+        #   v^2 * kappa. Use a short preview (kappa a few waypoints ahead, signed)
+        #   so the wheel leads the corner slightly instead of reacting once the
+        #   car has already drifted out.
+        if self.us_ff_gain > 0.0:
+            kappa_prev = float(
+                self.waypoints[(nearest_idx + self.us_ff_preview_n) % N].kappa_radpm
+            )
+            kappa_ff = 0.5 * kappa_near + 0.5 * kappa_prev   # blend current + preview
+            delta += self.us_ff_gain * (v * v) * kappa_ff
 
         # Heading + CTE direct feedback
         # [v6 수정] nearest_idx → target_idx 로 통일
