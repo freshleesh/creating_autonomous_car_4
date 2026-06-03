@@ -19,11 +19,11 @@ local_planning:
     s_blend:       3.0     # [m]  cosine blend distance (~ 2 * pp_lookahead)
 
     # ---- spline_avoid: avoidance geometry ----------------------------------
-    d_safe:        0.7     # [m]  peak lateral offset (±, left/right candidates)
-    s_in:          2.0     # [m]  min approach gap; closer than this -> trailing
+    d_safe:        0.45    # [m]  peak lateral offset (±, left/right candidates)
+    s_in:          1.5     # [m]  min approach gap; closer than this -> trailing
     s_out:         2.5     # [m]  distance from peak back to raceline rejoin
-    trigger_range: 10.0     # [m]  start considering avoidance within this gap
-    margin:        0.1     # [m]  wall/obstacle safety margin
+    trigger_range: 3.5     # [m]  start considering avoidance within this gap
+    margin:        0.2     # [m]  wall/obstacle safety margin
     obs_radius:    0.4     # [m]  obstacle inflation radius
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
 

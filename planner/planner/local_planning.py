@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0602 17:50
+#로컬플래닝 0603 22:00
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -34,7 +34,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, OccupancyGrid
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 from f110_msgs.msg import Wpnt, WpntArray
@@ -216,12 +216,9 @@ def tracking(obstacles, track, dt: float, ego):
     max_misses      = 15      # 안보일때 예측 유지 프레임 수
     Q_scale         = 0.5    # 칼만필터 노이즈 공분산
     R_scale         = 0.5    # 측정 노이즈 가중치
-    assoc_threshold = 1   # 동일한 물체로 인식하는 거리 기준
+    assoc_threshold = 2.0 # 동일한 물체로 인식하는 거리 기준
     lidar_to_base_x = 0.5     # 라이다 기준 좌표 거리
     
-    # (1.0에 가까울수록 지연 없이 즉시 반영, 낮을수록 부드러움)
-    ALPHA           = 0.05
-
     ex, ey, eyaw = ego
 
 
@@ -249,9 +246,6 @@ def tracking(obstacles, track, dt: float, ego):
         return (state, P, 0)
 
     state, P, misses = track
-    
-    prev_gx, prev_gy = float(state[0]), float(state[1])
-
 
     # ── 3. Predict ──
     F = np.array([
@@ -260,7 +254,8 @@ def tracking(obstacles, track, dt: float, ego):
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    Q     = np.eye(4) * Q_scale
+    # 위치/속도 분리 Q: 속도 노이즈를 작게 해서 Kalman이 속도를 부드럽게 추정
+    Q = np.diag([Q_scale, Q_scale, Q_scale * 0.1, Q_scale * 0.1])
     state = F @ state
     P     = F @ P @ F.T + Q
 
@@ -280,20 +275,15 @@ def tracking(obstacles, track, dt: float, ego):
             state = state + K @ innov
             P     = (np.eye(4) - K @ H) @ P
             misses = 0
-            
-
-            raw_vx = (meas[0] - prev_gx) / dt
-            raw_vy = (meas[1] - prev_gy) / dt
-            
-            state[2] = ALPHA * raw_vx + (1.0 - ALPHA) * state[2]
-            state[3] = ALPHA * raw_vy + (1.0 - ALPHA) * state[3]
-            
         else:
             state  = np.array([meas[0], meas[1], 0.0, 0.0])
             P      = np.eye(4)
             misses = 0
     else:
         misses += 1
+        # coasting 중 속도 감쇠 → 오버슈팅 방지 (0.5는 너무 급격해서 prediction 발산)
+        state[2] *= 0.85
+        state[3] *= 0.85
 
     if misses > max_misses:
         return None
@@ -323,20 +313,14 @@ def trailing(track, ego, ego_v) -> float:
     """
     # --- tunable parameters ---
     base_speed   = 4.0    # [m/s] free-running race speed
-    desired_gap  = 2.5    # [m] gap to hold behind the opponent
-    detect_range = 6.0    # [m] start reacting within this distance
-    kp           = 5.0    # P gain on the gap error
+    desired_gap  = 1.2    # [m] gap to hold behind the opponent
+    detect_range = 1.5    # [m] start reacting within this distance
+    kp           = 4.0    # P gain on the gap error
     kd           = 2.0    # D gain on the closing speed
-    min_hits     = 3      # only react to tracks confirmed for this many frames
     max_speed    = 6.0    # [m/s] absolute speed cap
 
     # 1. No opponent in view -> race at full speed.
     if track is None:
-        return base_speed
-
-    # 1b. Not yet confirmed (just a 1-2 frame flash, likely a wall fragment).
-    hits = track[3] if len(track) > 3 else 1
-    if hits < min_hits:
         return base_speed
 
     ox, oy, ovx, ovy = track[0]
@@ -411,11 +395,11 @@ class LocalPlanning(Node):
         self.s_blend       = float(gp('s_blend',        3.0))   # [m]
 
         # ---- avoidance (spline_avoid) ---------------------------------------
-        self.d_safe        = float(gp('d_safe',       0.7))     # [m] lateral offset
+        self.d_safe        = float(gp('d_safe',       0.3))     # [m] lateral offset
         self.s_in          = float(gp('s_in',         2.0))     # [m] min approach gap
         self.s_out         = float(gp('s_out',        2.5))     # [m] peak -> raceline
-        self.trigger_range = float(gp('trigger_range', 4.0))    # [m] forward trigger range
-        self.margin        = float(gp('margin',       0.2))     # [m] wall/obstacle margin
+        self.trigger_range = float(gp('trigger_range', 1.5))    # [m] forward trigger range
+        self.margin        = float(gp('margin',       0.1))     # [m] wall/obstacle margin
         self.obs_radius    = float(gp('obs_radius',   0.4))     # [m] obstacle inflate
         self.track_half_w  = float(gp('track_half_w', 0.8))     # [m] fallback half-width
         self.a_lat_max     = float(gp('a_lat_max',    6.0))     # [m/s^2] lat accel cap
@@ -427,6 +411,9 @@ class LocalPlanning(Node):
         # ---- wall clamping (per-sample clamp + PCHIP refit) -----------------
         self.clamp_to_walls = bool(gp('clamp_to_walls', True))
         self.clamp_buffer   = float(gp('clamp_buffer',  0.05))     # [m]
+
+        # ---- avoidance shape ------------------------------------------------
+        self.s_hold = float(gp('s_hold', 1.5))  # [m] 가까운 구간 경로 유지 거리
 
         # ---- Frenet state ---------------------------------------------------
         self._sx = None
@@ -442,6 +429,13 @@ class LocalPlanning(Node):
         # ---- perception / pose state ----------------------------------------
         self.track = None
         self.last_scan_t = None
+        self._occ_map    = None
+        self._map_array  = None
+        self._map_res    = None
+        self._map_ox     = None
+        self._map_oy     = None
+        self._map_w      = None
+        self._map_h      = None
         self.ex = self.ey = self.eyaw = 0.0
         self.ev = 0.0
         self.have_pose = False
@@ -456,9 +450,10 @@ class LocalPlanning(Node):
         latched = QoSProfile(depth=1,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=QoSReliabilityPolicy.RELIABLE)
-        self.create_subscription(WpntArray, self.global_topic, self._global_wp_cb, latched)
-        self.create_subscription(Odometry,  self.odom_topic,   self._odom_cb, 10)
-        self.create_subscription(LaserScan, self.scan_topic,   self._scan_cb, 10)
+        self.create_subscription(WpntArray,    self.global_topic, self._global_wp_cb, latched)
+        self.create_subscription(Odometry,     self.odom_topic,   self._odom_cb, 10)
+        self.create_subscription(LaserScan,    self.scan_topic,   self._scan_cb, 10)
+        self.create_subscription(OccupancyGrid, '/map',           self._map_cb, latched)
 
         self.local_pub  = self.create_publisher(WpntArray,   self.local_topic, latched)
         self.marker_pub = self.create_publisher(MarkerArray, '/local_waypoints/markers', 10)
@@ -473,6 +468,63 @@ class LocalPlanning(Node):
     # ================================================================== #
     # ROS callbacks
     # ================================================================== #
+    def _map_cb(self, msg):
+        self._occ_map = msg
+        info = msg.info
+        self._map_array  = np.array(msg.data, dtype=np.int8).reshape(info.height, info.width)
+        self._map_res    = info.resolution
+        self._map_ox     = info.origin.position.x
+        self._map_oy     = info.origin.position.y
+        self._map_w      = info.width
+        self._map_h      = info.height
+
+    def _is_on_static_map(self, gx, gy, w=0.5, h=0.35, threshold=50):
+        if self._occ_map is None:
+            return False
+        info = self._occ_map.info
+        res  = info.resolution
+        ox   = info.origin.position.x
+        oy   = info.origin.position.y
+        col = int((gx - ox) / res)
+        row = int((gy - oy) / res)
+        # 3x3 셀 중 3개 이상 occupied → 벽
+        occupied = 0
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                r, c = row + dr, col + dc
+                if 0 <= r < info.height and 0 <= c < info.width:
+                    if self._occ_map.data[r * info.width + c] >= threshold:
+                        occupied += 1
+        return occupied >= 3
+
+    def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
+        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
+        if self._map_array is None:
+            return x, y
+        lidar_to_base_x = 0.27
+        cyaw = math.cos(self.eyaw)
+        syaw = math.sin(self.eyaw)
+        valid = np.isfinite(x) & np.isfinite(y)
+        bx = np.where(valid, x + lidar_to_base_x, 0.0)
+        by = np.where(valid, y, 0.0)
+        gx = self.ex + cyaw * bx - syaw * by
+        gy = self.ey + syaw * bx + cyaw * by
+        cols = ((gx - self._map_ox) / self._map_res).astype(int)
+        rows = ((gy - self._map_oy) / self._map_res).astype(int)
+        in_bounds = valid & (cols >= 0) & (cols < self._map_w) & (rows >= 0) & (rows < self._map_h)
+        # 인접 셀까지 포함해서 벽 판단 (단일 셀만 보면 벽 경계 포인트가 통과됨)
+        on_wall = np.zeros(len(x), dtype=bool)
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                r2 = np.clip(rows + dr, 0, self._map_h - 1)
+                c2 = np.clip(cols + dc, 0, self._map_w - 1)
+                on_wall |= in_bounds & (self._map_array[r2, c2] >= threshold)
+        x = x.copy()
+        y = y.copy()
+        x[on_wall] = float('nan')
+        y[on_wall] = float('nan')
+        return x, y
+
     def _global_wp_cb(self, msg):
         self._build_frenet_spline(list(msg.wpnts))
 
@@ -495,8 +547,32 @@ class LocalPlanning(Node):
         # 1) perception
         ranges = np.asarray(msg.ranges, dtype=float)
         x, y = scan_to_xy(ranges, msg.angle_min, msg.angle_increment)
+        x, y = self._remove_wall_scan_points(x, y)  # 벽 포인트 제거 후 클러스터링
         clusters_xy = cluster(x, y, msg.angle_increment)
         obstacles = l_shape_fitting(clusters_xy)
+
+        # 장애물 필터링: 맵 기반 + Frenet 트랙 범위
+        lidar_to_base_x = 0.27
+        dynamic_obstacles = []
+        for (cx_l, cy_l, w, h) in obstacles:
+            bx = cx_l + lidar_to_base_x
+            by = cy_l
+            gx = self.ex + bx * math.cos(self.eyaw) - by * math.sin(self.eyaw)
+            gy = self.ey + bx * math.sin(self.eyaw) + by * math.cos(self.eyaw)
+            # 맵 필터
+            if self._is_on_static_map(gx, gy, w, h):
+                continue
+            # Frenet 필터: 트랙 범위 밖이면 벽으로 간주
+            if self._sx is not None:
+                s_obs, d_obs = self.to_frenet(gx, gy)
+                dl = self._dl_at(s_obs)
+                dr = self._dr_at(s_obs)
+                wall_buf = 0.10  # 경계에서 0.10m 안쪽까지만 유효 (벽 반사 제거)
+                if d_obs > dl - wall_buf or d_obs < -dr + wall_buf:
+                    continue
+            dynamic_obstacles.append((cx_l, cy_l, w, h))
+        obstacles = dynamic_obstacles
+
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
 
@@ -845,6 +921,14 @@ class LocalPlanning(Node):
                 self._avoid_state = None
                 self._clear_candidates()
             else:
+                # 코너 진입 시 회피 중단 → trailing (passthrough는 상대차 정면 충돌)
+                _, kappa_now = self._psi_kappa_at(self.ego_s)
+                if abs(kappa_now) > 0.3:
+                    self.get_logger().info(
+                        f'avoidance aborted: corner kappa={kappa_now:.3f} -> trailing')
+                    self._avoid_state = None
+                    self._clear_candidates()
+                    return self._build_trailing(), 'trailing'
                 # Keep the committed candidate visible until ego passes s_d.
                 return self._build_from_avoid_state(st), 'spline_avoid'
 
@@ -860,14 +944,28 @@ class LocalPlanning(Node):
 
         dl_obs = self._dl_at(s_obs)
         dr_obs = self._dr_at(s_obs)
-        in_front = 0.0 < gap < self.trigger_range
         on_track = -dr_obs < d_obs < dl_obs
-        if not (in_front and on_track):
+
+        # 장애물이 트랙에 있으면 일단 trailing 유지
+        if not on_track:
             self._clear_candidates()
             return self._build_passthrough(), 'free'
 
+        # trigger_range 밖이면 trailing (뒤따르기)
+        if gap >= self.trigger_range:
+            self._clear_candidates()
+            return self._build_trailing(), 'trailing'
+
+        in_front = 0.0 < gap < self.trigger_range
+
         # dynamic opponent -> trailing only, never commit a spline avoidance
         if opp_speed > self.dyn_speed_thresh:
+            self._clear_candidates()
+            return self._build_trailing(), 'trailing'
+
+        # 트랙이 충분히 넓을 때만 추월 시도
+        min_width = 0.35 * 2 + self.margin * 2
+        if (dl_obs + dr_obs) < min_width:
             self._clear_candidates()
             return self._build_trailing(), 'trailing'
 
@@ -877,16 +975,39 @@ class LocalPlanning(Node):
             self._clear_candidates()
             return self._build_trailing(), 'trailing'
 
-        # evaluate left/right candidates
-        s_obs_rel = self.ego_s + gap   # monotone (wrap-aware)
-        cand_left  = self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_obs)
-        cand_right = self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_obs)
+        # 상대차 위치 예측 (횡방향만, 종방향은 현재 gap 유지)
+        t_arrive = gap / max(self.ev, 1.0)
+        t_pred   = min(max(t_arrive, 1.5), 5.0)
+        pred_ox  = ox + vx_obs * t_pred
+        pred_oy  = oy + vy_obs * t_pred
+        _, d_pred = self.to_frenet(pred_ox, pred_oy)
+
+        self.get_logger().debug(
+            f'opp predict: t={t_pred:.2f}s  d {d_obs:.2f}->{d_pred:.2f}')
+
+        # 코너에서는 아웃코스 방향 candidate만 생성
+        # kappa>0(좌코너): 안=left(+d), 밖=right(-d) → outside_sign=-1
+        # kappa<0(우코너): 안=right(-d), 밖=left(+d) → outside_sign=+1
+        s_obs_rel = self.ego_s + gap
+        _, kappa_obs = self._psi_kappa_at(s_obs)
+        if abs(kappa_obs) > 0.4:
+            outside_sign = -math.copysign(1.0, kappa_obs)
+            label = 'out_left' if outside_sign > 0 else 'out_right'
+            cands = [self._make_avoidance_state(
+                s_obs_rel, outside_sign * self.d_safe, label, d_pred)]
+            self.get_logger().debug(
+                f'corner kappa={kappa_obs:.3f} -> {label} only')
+        else:
+            cands = [
+                self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_pred),
+                self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_pred),
+            ]
 
         results = []
-        for st in (cand_left, cand_right):
+        for st in cands:
             if st is None:
                 continue
-            cost = self._evaluate_state(st, ox, oy)
+            cost = self._evaluate_state(st, pred_ox, pred_oy)
             results.append({'state': st, 'cost': cost})
         self._publish_candidates(results)
 
@@ -926,8 +1047,15 @@ class LocalPlanning(Node):
         ego_s_init = float(self.ego_s)
         ego_d_init = float(self.ego_d)
         s_d = s_obs_rel + self.s_out
-        s_ctrl = np.array([ego_s_init, s_obs_rel, s_d], dtype=float)
-        d_ctrl = np.array([ego_d_init, float(d_avoid), 0.0], dtype=float)
+
+        # s_hold 구간 동안 현재 d 유지 → 가까운 구간 경로 변화 없음
+        s_hold_end = ego_s_init + self.s_hold
+        if s_obs_rel - s_hold_end > 0.5:
+            s_ctrl = np.array([ego_s_init, s_hold_end, s_obs_rel, s_d], dtype=float)
+            d_ctrl = np.array([ego_d_init, ego_d_init, float(d_avoid), 0.0], dtype=float)
+        else:
+            s_ctrl = np.array([ego_s_init, s_obs_rel, s_d], dtype=float)
+            d_ctrl = np.array([ego_d_init, float(d_avoid), 0.0], dtype=float)
         if not np.all(np.diff(s_ctrl) > 1e-3):
             return None
         cs_raw = CubicSpline(s_ctrl, d_ctrl, bc_type='natural')
