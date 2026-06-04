@@ -590,7 +590,7 @@ class LocalPlanning(Node):
         elif self.mode == 'trailing':
             out, used_mode = self._build_trailing(), 'trailing'
         elif self.mode == 'spline_avoid':
-            out, used_mode = self._build_spline_avoid_or_fallback()
+            out, used_mode = self._build_trailing(), 'trailing'
         else:
             self.get_logger().warn(f"unknown mode '{self.mode}' -> free")
             out, used_mode = self._build_passthrough(), 'free'
