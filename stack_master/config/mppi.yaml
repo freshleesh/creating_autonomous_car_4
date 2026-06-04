@@ -4,8 +4,8 @@ mppi:
     control_rate_hz:    20.0
 
     # Rollout shape (changing these triggers a JAX recompile on next launch)
-    n_samples:           256
-    n_steps:             12
+    n_samples:           8192
+    n_steps:             5
     sim_time_step:       0.1
     n_iterations:          1
 
@@ -37,7 +37,7 @@ mppi:
     max_speed:           6.0
 
     # Detection-based opponent keep-out
-    use_detection:       false
+    use_detection:       true
     max_obstacles:         8
     obstacle_weight:    50.0
     obstacle_radius:     0.6

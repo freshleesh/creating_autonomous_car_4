@@ -298,10 +298,13 @@ class MPPINode(Node):
         ex = self.odom.pose.pose.position.x
         ey = self.odom.pose.pose.position.y
         yaw = _yaw_from_quat(self.odom.pose.pose.orientation)
-        # Convert map-frame twist to forward speed (project onto heading).
-        vx = self.odom.twist.twist.linear.x
-        vy = self.odom.twist.twist.linear.y
-        v = vx * math.cos(yaw) + vy * math.sin(yaw)
+        # twist is in the BODY frame: gym_bridge fills linear.x = longitudinal
+        # speed and linear.y = 0 (f110_gym base_classes: linear_vels_x = state
+        # velocity, linear_vels_y = 0). The EKF-filtered /car_state/odom on the
+        # real car likewise reports body-frame twist. So forward speed is
+        # linear.x directly — do NOT project by yaw (that scaled it by cos(yaw),
+        # collapsing v to ~0 / negative as the car turned around the loop).
+        v = self.odom.twist.twist.linear.x
 
         x0 = np.array([ex, ey, self.last_drive_steer, v, yaw], dtype=np.float32)
 
