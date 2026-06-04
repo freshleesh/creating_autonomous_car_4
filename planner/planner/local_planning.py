@@ -254,7 +254,6 @@ def tracking(obstacles, track, dt: float, ego):
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    # 위치/속도 분리 Q: 속도 노이즈를 작게 해서 Kalman이 속도를 부드럽게 추정
     Q = np.diag([Q_scale, Q_scale, Q_scale * 0.1, Q_scale * 0.1])
     state = F @ state
     P     = F @ P @ F.T + Q
@@ -313,8 +312,8 @@ def trailing(track, ego, ego_v) -> float:
     """
     # --- tunable parameters ---
     base_speed   = 4.0    # [m/s] free-running race speed
-    desired_gap  = 1.2    # [m] gap to hold behind the opponent
-    detect_range = 1.5    # [m] start reacting within this distance
+    desired_gap  = 0.8    # [m] gap to hold behind the opponent
+    detect_range = 6.0    # [m] start reacting within this distance
     kp           = 4.0    # P gain on the gap error
     kd           = 2.0    # D gain on the closing speed
     max_speed    = 6.0    # [m/s] absolute speed cap
@@ -567,7 +566,7 @@ class LocalPlanning(Node):
                 s_obs, d_obs = self.to_frenet(gx, gy)
                 dl = self._dl_at(s_obs)
                 dr = self._dr_at(s_obs)
-                wall_buf = 0.10  # 경계에서 0.10m 안쪽까지만 유효 (벽 반사 제거)
+                wall_buf = 0.2  # 경계에서 0.25m 안쪽까지만 유효 (벽 반사 제거)
                 if d_obs > dl - wall_buf or d_obs < -dr + wall_buf:
                     continue
             dynamic_obstacles.append((cx_l, cy_l, w, h))
@@ -921,7 +920,33 @@ class LocalPlanning(Node):
                 self._avoid_state = None
                 self._clear_candidates()
             else:
-                # 코너 진입 시 회피 중단 → trailing (passthrough는 상대차 정면 충돌)
+                # 상대차 소멸 또는 측정 신뢰도 낮으면 즉시 회피 해제
+                if self.track is None:
+                    self.get_logger().info('avoidance aborted: opponent lost -> raceline')
+                    self._avoid_state = None
+                    self._clear_candidates()
+                    return self._build_passthrough(), 'free'
+
+                _, _P, misses = self.track
+                if misses > 3:  # 3프레임 이상 측정 없으면 과거 위치 → 해제
+                    self.get_logger().info(
+                        f'avoidance aborted: stale track misses={misses} -> raceline')
+                    self._avoid_state = None
+                    self._clear_candidates()
+                    return self._build_passthrough(), 'free'
+
+                # 상대차가 충분히 멀어졌으면 회피 해제
+                ox, oy = float(self.track[0][0]), float(self.track[0][1])
+                s_opp, _ = self.to_frenet(ox, oy)
+                gap_now = (s_opp - self.ego_s) % self.s_total
+                if gap_now > self.trigger_range * 2.0:
+                    self.get_logger().info(
+                        f'avoidance aborted: opponent far gap={gap_now:.2f} -> raceline')
+                    self._avoid_state = None
+                    self._clear_candidates()
+                    return self._build_passthrough(), 'free'
+
+                # 코너 진입 시 회피 중단 → trailing
                 _, kappa_now = self._psi_kappa_at(self.ego_s)
                 if abs(kappa_now) > 0.3:
                     self.get_logger().info(
@@ -985,22 +1010,20 @@ class LocalPlanning(Node):
         self.get_logger().debug(
             f'opp predict: t={t_pred:.2f}s  d {d_obs:.2f}->{d_pred:.2f}')
 
-        # 코너에서는 아웃코스 방향 candidate만 생성
-        # kappa>0(좌코너): 안=left(+d), 밖=right(-d) → outside_sign=-1
-        # kappa<0(우코너): 안=right(-d), 밖=left(+d) → outside_sign=+1
         s_obs_rel = self.ego_s + gap
         _, kappa_obs = self._psi_kappa_at(s_obs)
+
         if abs(kappa_obs) > 0.4:
+            # 코너: 아웃코스 방향만
             outside_sign = -math.copysign(1.0, kappa_obs)
             label = 'out_left' if outside_sign > 0 else 'out_right'
             cands = [self._make_avoidance_state(
                 s_obs_rel, outside_sign * self.d_safe, label, d_pred)]
-            self.get_logger().debug(
-                f'corner kappa={kappa_obs:.3f} -> {label} only')
         else:
+            # 직선: 양쪽 모두 평가
             cands = [
-                self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_pred),
                 self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_pred),
+                self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_pred),
             ]
 
         results = []
