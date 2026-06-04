@@ -21,6 +21,8 @@ class TrajectoryOptimizer(Node):
         self.declare_parameter('input_csv', 'centerline.csv')
         self.declare_parameter('output_csv', 'global_waypoints.csv')
         self.declare_parameter('safety_margin', 0.20)   # [m]   clearance from each wall
+        self.declare_parameter('margin_inner',  0.30)   # [m]   margin to the inside-of-corner wall
+        self.declare_parameter('margin_outer',  -1.0)   # [m]   margin to the outside-of-corner wall (<0 → safety_margin + 0.15)
         self.declare_parameter('v_max',         6.0)    # [m/s] vehicle speed cap
         self.declare_parameter('a_lat_max',     6.0)    # [m/s^2] lateral grip limit
         self.declare_parameter('a_long_max',    4.0)    # [m/s^2] longitudinal accel limit
@@ -30,6 +32,10 @@ class TrajectoryOptimizer(Node):
         input_csv     = self.get_parameter('input_csv').value
         output_csv    = self.get_parameter('output_csv').value
         safety_margin = self.get_parameter('safety_margin').value
+        margin_inner  = self.get_parameter('margin_inner').value
+        margin_outer  = self.get_parameter('margin_outer').value
+        if margin_outer < 0.0:                       # backward-compat fallback
+            margin_outer = safety_margin + 0.15
         v_max         = self.get_parameter('v_max').value
         a_lat_max     = self.get_parameter('a_lat_max').value
         a_long_max    = self.get_parameter('a_long_max').value
@@ -55,12 +61,15 @@ class TrajectoryOptimizer(Node):
 
         self.get_logger().info(
             f'[TrajectoryOptimizer] optimizing on {len(x_c)} centerline points '
-            f'(margin={safety_margin}, v_max={v_max}, a_lat={a_lat_max}, '
+            f'(margin={safety_margin}, m_in={margin_inner}, m_out={margin_outer}, '
+            f'v_max={v_max}, a_lat={a_lat_max}, '
             f'a_long={a_long_max}, target_ds={target_ds})'
         )
         x_opt, y_opt, psi, kappa, vx, w_r_new, w_l_new = self._optimize(
             x_c, y_c, w_r, w_l,
             safety_margin=safety_margin,
+            margin_inner=margin_inner,
+            margin_outer=margin_outer,
             v_max=v_max,
             a_lat_max=a_lat_max,
             a_long_max=a_long_max,
@@ -79,7 +88,8 @@ class TrajectoryOptimizer(Node):
     # ======================================================================
     @staticmethod
     def _optimize(x_c, y_c, w_r, w_l,
-                  safety_margin, v_max, a_lat_max, a_long_max, target_ds):
+                  safety_margin, margin_inner, margin_outer,
+                  v_max, a_lat_max, a_long_max, target_ds):
         """
         Minimum-curvature trajectory optimization.
 
@@ -87,7 +97,9 @@ class TrajectoryOptimizer(Node):
         ----------
         x_c, y_c   : (N,) centerline coordinates (closed loop, no duplicate end)
         w_r, w_l   : (N,) track half-widths to the right / left walls
-        safety_margin : [m] keep this far from each wall
+        safety_margin : [m] base wall clearance (used as margin_outer fallback)
+        margin_inner  : [m] margin to the inside-of-corner wall  (yaml: margin_inner)
+        margin_outer  : [m] margin to the outside-of-corner wall (yaml: margin_outer)
         v_max, a_lat_max, a_long_max : vehicle limits
         target_ds  : [m] desired arc-length spacing for the optimized output
 
@@ -274,13 +286,10 @@ class TrajectoryOptimizer(Node):
         STRAIGHT_BOOST = 5.0    # max extra curvature weight on a long clear straight
         straight_w = 1.0 + STRAIGHT_BOOST * np.clip(dist_corner / STRAIGHT_REF, 0.0, 1.0)
 
-        # Apex still gets a tighter margin than the outer side, but not
-        # razor-thin — 5 cm felt too risky in sim. 10 cm at the apex still
-        # gives noticeably more "inside" room than a symmetric layout.
-        margin_inner = 0.30    # raised 0.24→0.32: pull the racing line well off the inner wall so that
-                                 #   PP's inside-cutting (which we now ACCEPT) still leaves a safe buffer to
-                                 #   the inner corner. Also rounds the line → lower peak curvature → faster corners.
-        margin_outer = safety_margin + 0.15              # loose outer
+        # margin_inner / margin_outer now come from trajectory_optimizer.yaml.
+        # Typical racing setup: inner < outer (tight apex, loose outer wall).
+        # inner > outer is also allowed (pushes the line OFF the inner wall,
+        # useful when PP cuts inside) — the clip below is order-safe.
         mid = 0.5 * (margin_inner + margin_outer)
 
         m_in_eff  = mid + (margin_inner - mid) * turn
@@ -328,7 +337,12 @@ class TrajectoryOptimizer(Node):
         exit_extra  = 0.0       # [m] extra inner pull at corner exit (disabled)
         m_in_eff = m_in_eff + entry_extra * entry_bias_s \
                             - exit_extra  * exit_bias_s
-        m_in_eff = np.clip(m_in_eff, margin_inner, margin_outer)   # floor = margin_inner
+        # Order-safe clip: np.clip(x, lo, hi) silently returns hi everywhere
+        # when lo > hi, which used to erase any margin_inner > margin_outer
+        # setting. Sort the bounds so both orderings work as intended.
+        m_lo = min(margin_inner, margin_outer)
+        m_hi = max(margin_inner, margin_outer)
+        m_in_eff = np.clip(m_in_eff, m_lo, m_hi)
 
         # Two-phase budget (tuned via sweep).
         #
@@ -567,7 +581,7 @@ class TrajectoryOptimizer(Node):
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.5                        # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.3                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 

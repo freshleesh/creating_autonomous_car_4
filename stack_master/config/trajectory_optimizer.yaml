@@ -1,7 +1,9 @@
 /**:
   ros__parameters:
-    safety_margin:       0.10    # symmetric wall margin both sides [m] — raised for more clearance from walls
+    safety_margin:       0.25  # base wall margin [m] — fallback for margin_outer (= safety_margin + 0.15) when margin_outer < 0
+    margin_inner:        0.40  # [m] margin to the INSIDE-of-corner wall (apex side). Smaller = tighter apex. 0.30→0.40: keep 10 cm more off the inner wall at apex
+    margin_outer:        0.40  # [m] margin to the OUTSIDE-of-corner wall. Set -1.0 to fall back to safety_margin + 0.15
     v_max:               7.0   # top speed cap [m/s] — raised a bit overall (straights push higher via boost)
-    a_lat_max:           8.0    # lateral grip limit — sets corner speed [m/s²]
+    a_lat_max:           8.5    # lateral grip limit — sets corner speed [m/s²]
     a_long_max:          4.0    # longitudinal accel cap [m/s²]
     target_ds:           0.25   # resampling spacing [m]
