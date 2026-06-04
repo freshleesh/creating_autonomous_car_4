@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0603 22:00
+#로컬플래닝 0604 14:30
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -254,6 +254,7 @@ def tracking(obstacles, track, dt: float, ego):
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
+    # 위치/속도 분리 Q: 속도 노이즈를 작게 해서 Kalman이 속도를 부드럽게 추정
     Q = np.diag([Q_scale, Q_scale, Q_scale * 0.1, Q_scale * 0.1])
     state = F @ state
     P     = F @ P @ F.T + Q
@@ -561,6 +562,7 @@ class LocalPlanning(Node):
             # 맵 필터
             if self._is_on_static_map(gx, gy, w, h):
                 continue
+
             # Frenet 필터: 트랙 범위 밖이면 벽으로 간주
             if self._sx is not None:
                 s_obs, d_obs = self.to_frenet(gx, gy)
@@ -573,7 +575,7 @@ class LocalPlanning(Node):
         obstacles = dynamic_obstacles
 
         ego = (self.ex, self.ey, self.eyaw)
-        self.track = tracking(obstacles, self.track, dt, ego) 
+        self.track = tracking(obstacles, self.track, dt, ego)
 
         # 1.5) Publish RViz Markers for Detection and Tracking
         self._publish_detection_markers(obstacles)
@@ -889,7 +891,7 @@ class LocalPlanning(Node):
         """Passthrough + trailing PD speed cap."""
         ego = (self.ex, self.ey, self.eyaw)
         v_cap = trailing(self.track, ego, self.ev)
-        return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=v_cap, use_blend=False)
+        return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=v_cap)
 
     def _build_from_avoid_state(self, st):
         """Publish the committed avoidance spline as-is (no ego blend)."""
@@ -900,15 +902,14 @@ class LocalPlanning(Node):
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
-        """Spline avoidance with hysteresis and trailing fallback.
+        """Spline avoidance with hysteresis and trailing fallback."""
+        # trigger_range=0이면 avoidance 완전 비활성화
+        if self.trigger_range <= 0.0:
+            if self._avoid_state is not None:
+                self._avoid_state = None
+                self._clear_candidates()
+            return self._build_trailing(), 'trailing'
 
-        (A) avoidance committed -> hold until ego passes s_d
-        (B) not committed -> trigger check then try a new avoidance
-              not in front / off track  -> passthrough
-              gap < s_in                -> trailing
-              both candidates infeasible-> trailing
-              otherwise                 -> commit best candidate
-        """
         # (A) committed
         if self._avoid_state is not None:
             st = self._avoid_state
@@ -1010,20 +1011,22 @@ class LocalPlanning(Node):
         self.get_logger().debug(
             f'opp predict: t={t_pred:.2f}s  d {d_obs:.2f}->{d_pred:.2f}')
 
+        # 코너에서는 아웃코스 방향 candidate만 생성
+        # kappa>0(좌코너): 안=left(+d), 밖=right(-d) → outside_sign=-1
+        # kappa<0(우코너): 안=right(-d), 밖=left(+d) → outside_sign=+1
         s_obs_rel = self.ego_s + gap
         _, kappa_obs = self._psi_kappa_at(s_obs)
-
         if abs(kappa_obs) > 0.4:
-            # 코너: 아웃코스 방향만
             outside_sign = -math.copysign(1.0, kappa_obs)
             label = 'out_left' if outside_sign > 0 else 'out_right'
             cands = [self._make_avoidance_state(
                 s_obs_rel, outside_sign * self.d_safe, label, d_pred)]
+            self.get_logger().debug(
+                f'corner kappa={kappa_obs:.3f} -> {label} only')
         else:
-            # 직선: 양쪽 모두 평가
             cands = [
-                self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_pred),
                 self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_pred),
+                self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_pred),
             ]
 
         results = []
