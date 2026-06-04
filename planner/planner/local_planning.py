@@ -573,7 +573,7 @@ class LocalPlanning(Node):
         obstacles = dynamic_obstacles
 
         ego = (self.ex, self.ey, self.eyaw)
-        self.track = tracking(obstacles, self.track, dt, ego)
+        self.track = tracking(obstacles, self.track, dt, ego) 
 
         # 1.5) Publish RViz Markers for Detection and Tracking
         self._publish_detection_markers(obstacles)
@@ -889,7 +889,7 @@ class LocalPlanning(Node):
         """Passthrough + trailing PD speed cap."""
         ego = (self.ex, self.ey, self.eyaw)
         v_cap = trailing(self.track, ego, self.ev)
-        return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=v_cap)
+        return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=v_cap, use_blend=False)
 
     def _build_from_avoid_state(self, st):
         """Publish the committed avoidance spline as-is (no ego blend)."""
