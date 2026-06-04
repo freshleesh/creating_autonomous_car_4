@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
-    safety_margin:       0.4    # symmetric wall margin both sides [m] — raised for more clearance from walls
-    v_max:               6.5    # top speed cap [m/s] — raised a bit overall (straights push higher via boost)
-    a_lat_max:           6.0    # lateral grip limit — sets corner speed [m/s²]
+    safety_margin:       0.10    # symmetric wall margin both sides [m] — raised for more clearance from walls
+    v_max:               7.0   # top speed cap [m/s] — raised a bit overall (straights push higher via boost)
+    a_lat_max:           8.0    # lateral grip limit — sets corner speed [m/s²]
     a_long_max:          4.0    # longitudinal accel cap [m/s²]
     target_ds:           0.25   # resampling spacing [m]

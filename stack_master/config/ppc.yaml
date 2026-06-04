@@ -4,7 +4,7 @@
     pp_wheelbase:      0.33    # F1TENTH chassis, do NOT change [m]
     pp_max_steer:      0.4     # mechanical steering limit [rad] (~23°)
     control_rate_hz:   50.0    # control loop rate [Hz]
-    pp_speed_boost:    1.2     # speed multiplier on clear straights
+    pp_speed_boost:    1.3     # speed multiplier on clear straights
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
     pp_v_max_boost:    9.0     # boosted speed cap [m/s]
@@ -86,7 +86,7 @@
     # [v3] FAR (preview) soft cap: speed ≤ sqrt(a_lat_max * far_factor / kappa_far).
     #   Larger = looser = brakes later/abruptly at the near cap. Lowered from 3.0
     #   so the preview cap engages earlier → gentle pre-braking, smooth corner entry.
-    pp_alat_far_factor: 3.0    # [v14] 1.8→3.0: loosen the FAR preview cap a lot → the soft pre-braking ~5 m out almost stops → braking starts much LATER (closer to the corner)
+    pp_alat_far_factor: 5.0    # [v14] 1.8→3.0: loosen the FAR preview cap a lot → the soft pre-braking ~5 m out almost stops → braking starts much LATER (closer to the corner)
 
     # [v4] CTE-proportional speed reduction: speed /= (1 + k_v_cte * cte²)
     #   (not in this file before → used code default 0.8, which over-slowed when
@@ -96,4 +96,4 @@
     # [v3] Global speed scale — trajectory optimizer ran at a_lat=6 m/s² (too fast for PP)
     #   0.65 → 5.4 m/s becomes 3.5 m/s at corners (PP can actually track this)
     #   tune: 0.8 if still too slow, 0.5 if still hitting walls
-    pp_v_scale: 0.76    # [v13] 0.68→0.76 (two steps): more overall/corner speed to feed the wanted understeer. Long corner lookahead (v11) keeps it stable.
+    pp_v_scale: 0.90    # [v13] 0.68→0.76 (two steps): more overall/corner speed to feed the wanted understeer. Long corner lookahead (v11) keeps it stable.

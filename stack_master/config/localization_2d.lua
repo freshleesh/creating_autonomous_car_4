@@ -43,7 +43,7 @@ options = {
   landmarks_sampling_ratio = 1.,
   publish_tracked_pose = true, 
   pose_publish_period_sec = 1e-2,
-  publish_to_tf = false,
+  publish_to_tf = true,   -- real 차량에선 카토그래퍼가 직접 map->base_link TF 발행 (sim과 동일)
 }
 
 MAP_BUILDER.use_trajectory_builder_2d = true -- for 2d slam or localization
@@ -60,14 +60,14 @@ TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 0.1 --25
 TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 10
 
 POSE_GRAPH.constraint_builder.min_score = 0.60
-POSE_GRAPH.constraint_builder.global_localization_min_score = 0.80
+POSE_GRAPH.constraint_builder.global_localization_min_score = 0.60
 
 TRAJECTORY_BUILDER.pure_localization_trimmer = {
   max_submaps_to_keep = 3,
 }
 POSE_GRAPH.optimize_every_n_nodes = 3 --매핑에 비해 낮춰줘야함
 
-POSE_GRAPH.global_sampling_ratio = 0.003 -- 0.003 -- 전역 매칭 샘플링 비율
+POSE_GRAPH.global_sampling_ratio = 0.03 -- 0.003 -- 전역 매칭 샘플링 비율
 POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.linear_search_window = 3. -- 선형 검색 범위 (m)
 POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.angular_search_window = math.rad(30.) -- 각도 검색 범위 (deg)
 

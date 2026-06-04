@@ -277,7 +277,7 @@ class TrajectoryOptimizer(Node):
         # Apex still gets a tighter margin than the outer side, but not
         # razor-thin — 5 cm felt too risky in sim. 10 cm at the apex still
         # gives noticeably more "inside" room than a symmetric layout.
-        margin_inner = 0.32      # raised 0.24→0.32: pull the racing line well off the inner wall so that
+        margin_inner = 0.30    # raised 0.24→0.32: pull the racing line well off the inner wall so that
                                  #   PP's inside-cutting (which we now ACCEPT) still leaves a safe buffer to
                                  #   the inner corner. Also rounds the line → lower peak curvature → faster corners.
         margin_outer = safety_margin + 0.15              # loose outer
@@ -286,7 +286,7 @@ class TrajectoryOptimizer(Node):
         m_in_eff  = mid + (margin_inner - mid) * turn
         m_out_eff = mid + (margin_outer - mid) * turn
 
-        # Late-apex bias.
+        # Late-apex bias.cvzxcv
         # ----------------------------------------------
         # Classic racer trick: delay the turn-in so the corner can be
         # exited on a straighter line, carrying more speed onto the next
@@ -585,8 +585,8 @@ class TrajectoryOptimizer(Node):
         # We blend linearly from cap_mild to cap_sharp as |κ| rises to
         # KAPPA_HARD, so weak corners speed up the most while hairpins stay
         # safe.
-        cap_mild   = 1.60       # gentle corners already OK (understeer cancels the cut there)
-        cap_sharp  = 1.40       # [v15] 1.22→1.40 (two steps): TIGHT corners were cutting inside badly
+        cap_mild   = 1.80       # gentle corners already OK (understeer cancels the cut there)
+        cap_sharp  = 1.80       # [v15] 1.22→1.40 (two steps): TIGHT corners were cutting inside badly
                                 #   (low speed there → little understeer → cut dominates). Raise the
                                 #   tight-corner speed specifically to generate the cancelling understeer.
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
