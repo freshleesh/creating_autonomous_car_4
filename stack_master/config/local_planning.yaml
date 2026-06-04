@@ -22,14 +22,15 @@ local_planning:
     d_safe:        0.45    # [m]  peak lateral offset (±, left/right candidates)
     s_in:          1.5     # [m]  min approach gap; closer than this -> trailing
     s_out:         2.5     # [m]  distance from peak back to raceline rejoin
-    trigger_range: 3.5     # [m]  start considering avoidance within this gap
-    margin:        0.2     # [m]  wall/obstacle safety margin
+    trigger_range: 1.5     # [m]  start considering avoidance within this gap
+    margin:        0.35    # [m]  wall/obstacle safety margin
     obs_radius:    0.4     # [m]  obstacle inflation radius
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
 
     # ---- spline_avoid: speed limits ----------------------------------------
     a_lat_max:      6.0    # [m/s^2] lateral accel cap (curvature-based vx cap)
-    vx_scale_avoid: 0.5    # [-]     speed multiplier while on avoidance spline
+    vx_scale_avoid: 0.85   # [-]     speed multiplier while on avoidance spline
+    dyn_speed_thresh: 0.3  # [m/s]  이 속도 이상이면 dynamic → trailing만, 미만이면 avoidance 시도
 
     # ---- spline_avoid: wall clamping (forces wall feasibility) -------------
     # Per-point clamp wall-violating samples back inside the corridor, then
