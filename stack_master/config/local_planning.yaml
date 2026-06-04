@@ -20,9 +20,9 @@ local_planning:
 
     # ---- spline_avoid: avoidance geometry ----------------------------------
     d_safe:        0.45    # [m]  peak lateral offset (±, left/right candidates)
-    s_in:          1.5     # [m]  min approach gap; closer than this -> trailing
+    s_in:          0.5     # [m]  min approach gap; closer than this -> trailing
     s_out:         2.5     # [m]  distance from peak back to raceline rejoin
-    trigger_range: 0.0     # [m]  0 = trailing only (avoidance disabled)
+    trigger_range: 5.0     # [m]  start considering avoidance within this gap
     margin:        0.35    # [m]  wall/obstacle safety margin
     obs_radius:    0.4     # [m]  obstacle inflation radius
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
@@ -37,4 +37,5 @@ local_planning:
     # PCHIP-refit. Obstacle clearance is still enforced (safety preserved).
     clamp_to_walls:  true   # [bool] enable clamp + PCHIP smoothing
     clamp_buffer:    0.05   # [m]    extra inward buffer beyond margin
+    s_hold:          2.5    # [m]    이 거리까지 현재 경로 유지 후 회피 시작
 

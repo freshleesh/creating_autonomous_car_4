@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0604 14:30
+#로컬플래닝 0604 16:00
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -243,9 +243,9 @@ def tracking(obstacles, track, dt: float, ego):
             return None
         state = np.array([meas[0], meas[1], 0.0, 0.0])
         P     = np.eye(4)
-        return (state, P, 0)
+        return (state, P, 0, 1)   # (state, P, misses, hits)
 
-    state, P, misses = track
+    state, P, misses, hits = track
 
     # ── 3. Predict ──
     F = np.array([
@@ -254,7 +254,6 @@ def tracking(obstacles, track, dt: float, ego):
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ])
-    # 위치/속도 분리 Q: 속도 노이즈를 작게 해서 Kalman이 속도를 부드럽게 추정
     Q = np.diag([Q_scale, Q_scale, Q_scale * 0.1, Q_scale * 0.1])
     state = F @ state
     P     = F @ P @ F.T + Q
@@ -275,20 +274,21 @@ def tracking(obstacles, track, dt: float, ego):
             state = state + K @ innov
             P     = (np.eye(4) - K @ H) @ P
             misses = 0
+            hits  += 1
         else:
             state  = np.array([meas[0], meas[1], 0.0, 0.0])
             P      = np.eye(4)
             misses = 0
+            hits   = 1
     else:
         misses += 1
-        # coasting 중 속도 감쇠 → 오버슈팅 방지 (0.5는 너무 급격해서 prediction 발산)
         state[2] *= 0.85
         state[3] *= 0.85
 
     if misses > max_misses:
         return None
 
-    return (state, P, misses)
+    return (state, P, misses, hits)
 
 
 
@@ -314,10 +314,11 @@ def trailing(track, ego, ego_v) -> float:
     # --- tunable parameters ---
     base_speed   = 4.0    # [m/s] free-running race speed
     desired_gap  = 0.8    # [m] gap to hold behind the opponent
-    detect_range = 6.0    # [m] start reacting within this distance
-    kp           = 4.0    # P gain on the gap error
-    kd           = 2.0    # D gain on the closing speed
-    max_speed    = 6.0    # [m/s] absolute speed cap
+    detect_range  = 6.0    # [m] start reacting within this distance
+    kp            = 8.0    # P gain on the gap error
+    kd            = 3.0    # D gain on the closing speed
+    max_speed     = 6.0    # [m/s] absolute speed cap
+    emergency_stop = 0.12  # [m] 이 거리 이내 → 최저 속도로
 
     # 1. No opponent in view -> race at full speed.
     if track is None:
@@ -336,7 +337,11 @@ def trailing(track, ego, ego_v) -> float:
     if opp_dist < 0.0 or opp_dist > detect_range:
         return base_speed
 
-    # 4. Classic PD anchored at base_speed (the version that worked best).
+    # 4. 12cm 이내 → 최저 속도 유지
+    if opp_dist <= emergency_stop:
+        return 0.5
+
+    # 5. Classic PD anchored at base_speed.
     speed = base_speed + kp * (opp_dist - desired_gap) + kd * closing
     speed = max(0.0, min(speed, base_speed, max_speed))
     return speed
@@ -428,6 +433,7 @@ class LocalPlanning(Node):
 
         # ---- perception / pose state ----------------------------------------
         self.track = None
+        self.track_is_dynamic = True  # True=동적차량, False=정적장애물
         self.last_scan_t = None
         self._occ_map    = None
         self._map_array  = None
@@ -577,6 +583,16 @@ class LocalPlanning(Node):
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
 
+        # 동적/정적 분류 (track reset 없이 플래그만) → 깜빡임 방지
+        # hits >= 20 이후 speed 기준으로 분류, 그 전까지는 dynamic으로 가정
+        if self.track is not None:
+            _st, _P, _misses, hits = self.track
+            speed = math.hypot(float(_st[2]), float(_st[3]))
+            if hits >= 20:
+                self.track_is_dynamic = speed >= self.dyn_speed_thresh
+            else:
+                self.track_is_dynamic = True
+
         # 1.5) Publish RViz Markers for Detection and Tracking
         self._publish_detection_markers(obstacles)
         self._publish_tracking_markers()
@@ -590,7 +606,7 @@ class LocalPlanning(Node):
         elif self.mode == 'trailing':
             out, used_mode = self._build_trailing(), 'trailing'
         elif self.mode == 'spline_avoid':
-            out, used_mode = self._build_trailing(), 'trailing'
+            out, used_mode = self._build_spline_avoid_or_fallback()
         else:
             self.get_logger().warn(f"unknown mode '{self.mode}' -> free")
             out, used_mode = self._build_passthrough(), 'free'
@@ -639,7 +655,7 @@ class LocalPlanning(Node):
         ma.markers.append(clear)
 
         if self.track is not None:
-            state, P, misses = self.track
+            state, P, misses, hits = self.track
             gx, gy, vx, vy = state
             stamp = self.get_clock().now().to_msg()
 
@@ -661,7 +677,10 @@ class LocalPlanning(Node):
             ma.markers.append(m)
 
             speed = math.hypot(vx, vy)
-            if speed > 0.1:
+            if speed > 0.02:
+                # 방향 벡터를 고정 길이(1.0m)로 정규화해서 항상 명확하게 표시
+                arrow_len = max(speed * 3.0, 0.5)  # 최소 0.5m, 속도 3배 스케일
+                nx = vx / speed; ny = vy / speed
                 arr = Marker()
                 arr.header.frame_id = 'map'
                 arr.header.stamp = stamp
@@ -670,14 +689,16 @@ class LocalPlanning(Node):
                 arr.type = Marker.ARROW
                 arr.action = Marker.ADD
                 p1 = Point()
-                p1.x, p1.y, p1.z = float(gx), float(gy), 0.2
+                p1.x, p1.y, p1.z = float(gx), float(gy), 0.3
                 p2 = Point()
-                p2.x, p2.y, p2.z = float(gx + vx), float(gy + vy), 0.2
+                p2.x = float(gx + nx * arrow_len)
+                p2.y = float(gy + ny * arrow_len)
+                p2.z = 0.3
                 arr.points = [p1, p2]
-                arr.scale.x = 0.1
-                arr.scale.y = 0.2
+                arr.scale.x = 0.08   # shaft 굵기
+                arr.scale.y = 0.20   # head 크기
                 arr.scale.z = 0.0
-                arr.color.r, arr.color.g, arr.color.b, arr.color.a = 0.0, 1.0, 0.0, 0.8
+                arr.color.r, arr.color.g, arr.color.b, arr.color.a = 1.0, 0.4, 0.7, 1.0
                 ma.markers.append(arr)
 
         self.trk_pub.publish(ma)
@@ -928,7 +949,7 @@ class LocalPlanning(Node):
                     self._clear_candidates()
                     return self._build_passthrough(), 'free'
 
-                _, _P, misses = self.track
+                _, _P, misses, _hits = self.track
                 if misses > 3:  # 3프레임 이상 측정 없으면 과거 위치 → 해제
                     self.get_logger().info(
                         f'avoidance aborted: stale track misses={misses} -> raceline')
@@ -984,8 +1005,8 @@ class LocalPlanning(Node):
 
         in_front = 0.0 < gap < self.trigger_range
 
-        # dynamic opponent -> trailing only, never commit a spline avoidance
-        if opp_speed > self.dyn_speed_thresh:
+        # 동적 차량 → trailing, 정적 장애물 → avoidance
+        if self.track_is_dynamic:
             self._clear_candidates()
             return self._build_trailing(), 'trailing'
 
@@ -1001,15 +1022,17 @@ class LocalPlanning(Node):
             self._clear_candidates()
             return self._build_trailing(), 'trailing'
 
-        # 상대차 위치 예측 (횡방향만, 종방향은 현재 gap 유지)
-        t_arrive = gap / max(self.ev, 1.0)
-        t_pred   = min(max(t_arrive, 1.5), 5.0)
-        pred_ox  = ox + vx_obs * t_pred
-        pred_oy  = oy + vy_obs * t_pred
-        _, d_pred = self.to_frenet(pred_ox, pred_oy)
+        # 상대차 위치 예측 - Frenet s축 전진 (코너에서도 궤적 추종)
+        # Cartesian 속도 기반 예측은 코너에서 직선으로 날아가 인코스 오판 유발
+        opp_speed = math.hypot(vx_obs, vy_obs)
+        t_arrive  = gap / max(self.ev, 1.0)
+        t_pred    = min(max(t_arrive, 1.5), 5.0)
+        s_pred    = (s_obs + opp_speed * t_pred) % self.s_total
+        d_pred    = d_obs   # 횡방향은 현재 위치 유지
+        pred_ox, pred_oy = self.to_cartesian(s_pred, d_pred)
 
         self.get_logger().debug(
-            f'opp predict: t={t_pred:.2f}s  d {d_obs:.2f}->{d_pred:.2f}')
+            f'opp predict (frenet): t={t_pred:.2f}s  s {s_obs:.2f}->{s_pred:.2f}  d={d_pred:.2f}')
 
         # 코너에서는 아웃코스 방향 candidate만 생성
         # kappa>0(좌코너): 안=left(+d), 밖=right(-d) → outside_sign=-1
