@@ -44,7 +44,7 @@
     #   levels AND steering got smoother. 0.15 is the robust pick — 0.20+ over-
     #   steers/oscillates when the car does NOT understeer. Raise toward 0.2 only if
     #   it still drifts wide; lower if it weaves on a well-gripping day.
-    pp_K_heading:      0.08    # [v8] lowered 0.15→0.08: keep a little heading damping but cut the gain (less weaving)
+    pp_K_heading:      0.05     # 고속 진동 방지: speed-adaptive 게인이 0.16까지 올라가 진동 유발
     # [v9] Understeer / predictive feedforward (delta += gain*v^2*kappa).
     #   ENABLED at a tiny 0.002 as an experiment. ⚠️ In closed-loop sim this term
     #   is grip-SENSITIVE: with good grip / little understeer it OVER-steers into
@@ -54,7 +54,7 @@
     #   feedback above already gives most of the anticipation more safely.
     pp_us_ff_gain:     0.0     # [v9.1] turned OFF: it was the instability source at higher corner
                                #   speed/understeer (spun in sim). Heading feedback handles anticipation.
-    pp_Kd_cte:         0.05    # restored to baseline (no aggressive D needed once Kp_cte loop is gone)
+    pp_Kd_cte:         0.0    # 진동 시 dcte/dt도 진동 → 증폭 방지
 
     # [v6] Target-heading feedback. PP geometry already aims at target_idx, so this
     #   double-steers toward the forward (inside) heading. Code comment recommends 0;

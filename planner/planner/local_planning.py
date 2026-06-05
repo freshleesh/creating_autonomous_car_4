@@ -73,7 +73,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
     sigma      = 0.3   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
-    min_points = 8       # 클러스터링 충족하는 포인트 수 (10→6: 먼 거리 정적 객체 감지)
+    min_points = 12      # 클러스터링 충족하는 포인트 수 (벽 반사 단편 제거)
 
 
     use_adaptive = angle_inc > 1e-9
@@ -157,7 +157,7 @@ def l_shape_fitting(clusters):
         cov          = np.cov(pts_centered, rowvar=False)
         try:
             eigenvalues, _ = np.linalg.eigh(cov)
-            if max(eigenvalues) / (min(eigenvalues) + 1e-6) > 1000.0:
+            if max(eigenvalues) / (min(eigenvalues) + 1e-6) > 80.0:
                 continue
         except np.linalg.LinAlgError:
             continue
@@ -274,11 +274,10 @@ def tracking(obstacles, track, dt: float, ego):
             misses = 0
             hits  += 1
         else:
-            # 측정이 gate 밖 → 새 측정으로 reset (빠른 재획득)
-            state  = np.array([meas[0], meas[1], 0.0, 0.0])
-            P      = np.eye(4)
-            misses = 0
-            hits   = 1
+            # 측정이 gate 밖 → miss(코스팅) — reset 금지 (벽으로 점프 방지)
+            misses += 1
+            state[2] *= 0.85
+            state[3] *= 0.85
     else:
         misses += 1
         state[2] *= 0.85
@@ -311,12 +310,12 @@ def trailing(track, ego, ego_v) -> float:
     True PD on the gap: kp on the gap error, kd on the *closing* speed.
     """
     # --- tunable parameters ---
-    base_speed   = 4.0    # [m/s] free-running race speed
+    base_speed   = 8.0    # [m/s] free-running race speed
     desired_gap  = 0.6    # [m] gap to hold behind the opponent
-    detect_range  = 4.0    # [m] start reacting within this distance
+    detect_range  = 3.0    # [m] start reacting within this distance
     kp            = 8.0    # P gain on the gap error
     kd            = 3.0    # D gain on the closing speed
-    max_speed     = 6.0    # [m/s] absolute speed cap
+    max_speed     = 8.0    # [m/s] absolute speed cap
     full_stop      = 0.2   # [m] 이 거리 이내 → 완전 정지
     emergency_stop = 0.5   # [m] 이 거리 이내 → 최저 속도로
 
@@ -508,9 +507,7 @@ class LocalPlanning(Node):
         return occupied >= 3
 
     def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
-        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거.
-        단, track 위치 주변 1.0m 이내 포인트는 보존 (정적 장애물 보호).
-        """
+        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
         if self._map_array is None:
             return x, y
         lidar_to_base_x = 0.27
@@ -945,9 +942,9 @@ class LocalPlanning(Node):
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
-        """Trailing only (avoidance disabled)."""
-        if self.track is None or self.track[3] < 3:
-            return self._build_passthrough(), 'free'
+        """Trailing only (avoidance disabled).
+        track 유무 관계없이 항상 trailing() 경유 → base_speed 캡 적용.
+        """
         return self._build_trailing(), 'trailing'
 
     # ================================================================== #
