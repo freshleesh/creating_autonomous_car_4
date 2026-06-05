@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0604 16:00
+#로컬플래닝 0606
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -72,8 +72,8 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
-    sigma      = 0.35   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
-    min_points = 10      # 클러스터링 충족하는 포인트 수
+    sigma      = 0.3   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
+    min_points = 8       # 클러스터링 충족하는 포인트 수 (10→6: 먼 거리 정적 객체 감지)
 
 
     use_adaptive = angle_inc > 1e-9
@@ -135,7 +135,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
 
 def l_shape_fitting(clusters):
     # --- tunable parameters ---
-    max_obs_size = 0.9       # 장애물 길이 범위
+    max_obs_size = 1.3       # 장애물 길이 범위
     min_size     = 0.15       
     min_edge     = 0.01
     n_angles     = 90
@@ -214,19 +214,17 @@ def tracking(obstacles, track, dt: float, ego):
     # --- tunable parameters ---
     opp_max_lat     = 5       # 좌우 트래킹 범위
     max_misses      = 15      # 안보일때 예측 유지 프레임 수
-    Q_scale         = 0.5    # 칼만필터 노이즈 공분산
-    R_scale         = 0.5    # 측정 노이즈 가중치
-    assoc_threshold = 2.0 # 동일한 물체로 인식하는 거리 기준
+    Q_scale         = 0.5     # 칼만필터 노이즈 공분산
+    R_scale         = 0.5     # 측정 노이즈 가중치
+    assoc_threshold = 2.0     # 동일한 물체로 인식하는 거리 기준
     lidar_to_base_x = 0.5     # 라이다 기준 좌표 거리
-    
+
     ex, ey, eyaw = ego
-
-
 
     meas = None
     best_dist = float('inf')
     for (cx_l, cy_l, w, h) in obstacles:
-        if not (0.0 < cx_l < 15.0 and abs(cy_l) <= opp_max_lat): # 앞뒤 좌우 트래킹 범위
+        if not (0.0 < cx_l < 15.0 and abs(cy_l) <= opp_max_lat):
             continue
         bx = cx_l + lidar_to_base_x
         by = cy_l
@@ -243,11 +241,11 @@ def tracking(obstacles, track, dt: float, ego):
             return None
         state = np.array([meas[0], meas[1], 0.0, 0.0])
         P     = np.eye(4)
-        return (state, P, 0, 1)   # (state, P, misses, hits)
+        return (state, P, 0, 1)
 
     state, P, misses, hits = track
 
-    # ── 3. Predict ──
+    # 3. Predict
     F = np.array([
         [1.0, 0.0,  dt, 0.0],
         [0.0, 1.0, 0.0,  dt],
@@ -258,7 +256,7 @@ def tracking(obstacles, track, dt: float, ego):
     state = F @ state
     P     = F @ P @ F.T + Q
 
-    # ── 4. Update / coast ──
+    # 4. Update / coast
     if meas is not None:
         pred_pos = state[:2]
         if math.hypot(meas[0] - pred_pos[0], meas[1] - pred_pos[1]) <= assoc_threshold:
@@ -276,6 +274,7 @@ def tracking(obstacles, track, dt: float, ego):
             misses = 0
             hits  += 1
         else:
+            # 측정이 gate 밖 → 새 측정으로 reset (빠른 재획득)
             state  = np.array([meas[0], meas[1], 0.0, 0.0])
             P      = np.eye(4)
             misses = 0
@@ -313,12 +312,13 @@ def trailing(track, ego, ego_v) -> float:
     """
     # --- tunable parameters ---
     base_speed   = 4.0    # [m/s] free-running race speed
-    desired_gap  = 0.8    # [m] gap to hold behind the opponent
-    detect_range  = 6.0    # [m] start reacting within this distance
+    desired_gap  = 0.6    # [m] gap to hold behind the opponent
+    detect_range  = 4.0    # [m] start reacting within this distance
     kp            = 8.0    # P gain on the gap error
     kd            = 3.0    # D gain on the closing speed
     max_speed     = 6.0    # [m/s] absolute speed cap
-    emergency_stop = 0.12  # [m] 이 거리 이내 → 최저 속도로
+    full_stop      = 0.2   # [m] 이 거리 이내 → 완전 정지
+    emergency_stop = 0.5   # [m] 이 거리 이내 → 최저 속도로
 
     # 1. No opponent in view -> race at full speed.
     if track is None:
@@ -337,7 +337,9 @@ def trailing(track, ego, ego_v) -> float:
     if opp_dist < 0.0 or opp_dist > detect_range:
         return base_speed
 
-    # 4. 12cm 이내 → 최저 속도 유지
+    # 4. 50cm 이내 → 최저 속도, 20cm 이내 → 완전 정지
+    if opp_dist <= full_stop:
+        return 0.0
     if opp_dist <= emergency_stop:
         return 0.5
 
@@ -434,6 +436,7 @@ class LocalPlanning(Node):
         # ---- perception / pose state ----------------------------------------
         self.track = None
         self.track_is_dynamic = True  # True=동적차량, False=정적장애물
+        self._front_stop = False       # -10°~+10°, 15cm 이내 장애물 → 정지
         self.last_scan_t = None
         self._occ_map    = None
         self._map_array  = None
@@ -451,6 +454,7 @@ class LocalPlanning(Node):
         # ---- avoidance commit (hysteresis) ----------------------------------
         # Hold the same spline until ego passes s_d (raceline rejoin point).
         self._avoid_state = None
+        self._avoid_committed_time = None   # 정적 회피 시작 시각 (3초 hold)
 
         # ---- ROS interfaces -------------------------------------------------
         latched = QoSProfile(depth=1,
@@ -504,7 +508,9 @@ class LocalPlanning(Node):
         return occupied >= 3
 
     def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
-        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
+        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거.
+        단, track 위치 주변 1.0m 이내 포인트는 보존 (정적 장애물 보호).
+        """
         if self._map_array is None:
             return x, y
         lidar_to_base_x = 0.27
@@ -518,7 +524,6 @@ class LocalPlanning(Node):
         cols = ((gx - self._map_ox) / self._map_res).astype(int)
         rows = ((gy - self._map_oy) / self._map_res).astype(int)
         in_bounds = valid & (cols >= 0) & (cols < self._map_w) & (rows >= 0) & (rows < self._map_h)
-        # 인접 셀까지 포함해서 벽 판단 (단일 셀만 보면 벽 경계 포인트가 통과됨)
         on_wall = np.zeros(len(x), dtype=bool)
         for dr in range(-radius, radius + 1):
             for dc in range(-radius, radius + 1):
@@ -552,6 +557,15 @@ class LocalPlanning(Node):
 
         # 1) perception
         ranges = np.asarray(msg.ranges, dtype=float)
+
+        # 전방 -10°~+10°, 15cm 이내 장애물 → 정지 플래그
+        angles_all = msg.angle_min + np.arange(len(ranges)) * msg.angle_increment
+        front_mask = (
+            (angles_all >= math.radians(-10)) & (angles_all <= math.radians(10))
+            & np.isfinite(ranges) & (ranges > 0.0)
+        )
+        self._front_stop = bool(np.any(front_mask & (ranges < 0.15)))
+
         x, y = scan_to_xy(ranges, msg.angle_min, msg.angle_increment)
         x, y = self._remove_wall_scan_points(x, y)  # 벽 포인트 제거 후 클러스터링
         clusters_xy = cluster(x, y, msg.angle_increment)
@@ -574,7 +588,7 @@ class LocalPlanning(Node):
                 s_obs, d_obs = self.to_frenet(gx, gy)
                 dl = self._dl_at(s_obs)
                 dr = self._dr_at(s_obs)
-                wall_buf = 0.2  # 경계에서 0.25m 안쪽까지만 유효 (벽 반사 제거)
+                wall_buf = 0.1
                 if d_obs > dl - wall_buf or d_obs < -dr + wall_buf:
                     continue
             dynamic_obstacles.append((cx_l, cy_l, w, h))
@@ -583,13 +597,19 @@ class LocalPlanning(Node):
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
 
-        # 동적/정적 분류 (track reset 없이 플래그만) → 깜빡임 방지
-        # hits >= 20 이후 speed 기준으로 분류, 그 전까지는 dynamic으로 가정
+        # 동적/정적 분류: closing speed 우선 → hits 기반 fallback
         if self.track is not None:
             _st, _P, _misses, hits = self.track
-            speed = math.hypot(float(_st[2]), float(_st[3]))
-            if hits >= 20:
-                self.track_is_dynamic = speed >= self.dyn_speed_thresh
+            opp_spd = math.hypot(float(_st[2]), float(_st[3]))
+            # 자차 헤딩 방향으로 상대 속도 투영
+            c_e = math.cos(self.eyaw); s_e = math.sin(self.eyaw)
+            opp_v_fwd   = c_e * float(_st[2]) + s_e * float(_st[3])
+            closing_rate = self.ev - opp_v_fwd   # >0 = 가까워지는 중
+            # 장애물이 느리고 자차가 빠르게 접근 → 즉시 정적 판정
+            if opp_spd < self.dyn_speed_thresh and closing_rate > 1.0:
+                self.track_is_dynamic = False
+            elif hits >= 20:
+                self.track_is_dynamic = opp_spd >= self.dyn_speed_thresh
             else:
                 self.track_is_dynamic = True
 
@@ -869,6 +889,8 @@ class LocalPlanning(Node):
             vx = np.minimum(vx, v_curv)
         if vx_scale != 1.0:
             vx = vx * float(vx_scale)
+        if self._front_stop:
+            vx = np.zeros_like(vx)
 
         # build Wpnt array
         out = self._empty_header()
@@ -923,155 +945,10 @@ class LocalPlanning(Node):
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
-        """Spline avoidance with hysteresis and trailing fallback."""
-        # trigger_range=0이면 avoidance 완전 비활성화
-        if self.trigger_range <= 0.0:
-            if self._avoid_state is not None:
-                self._avoid_state = None
-                self._clear_candidates()
-            return self._build_trailing(), 'trailing'
-
-        # (A) committed
-        if self._avoid_state is not None:
-            st = self._avoid_state
-            ahead = (st['s_d'] - self.ego_s) % self.s_total
-            if ahead > self.s_total / 2:   # passed
-                self.get_logger().info(
-                    f"avoidance done (s_d={st['s_d']:.2f}, ego_s={self.ego_s:.2f}) "
-                    f"-> raceline")
-                self._avoid_state = None
-                self._clear_candidates()
-            else:
-                # 상대차 소멸 또는 측정 신뢰도 낮으면 즉시 회피 해제
-                if self.track is None:
-                    self.get_logger().info('avoidance aborted: opponent lost -> raceline')
-                    self._avoid_state = None
-                    self._clear_candidates()
-                    return self._build_passthrough(), 'free'
-
-                _, _P, misses, _hits = self.track
-                if misses > 3:  # 3프레임 이상 측정 없으면 과거 위치 → 해제
-                    self.get_logger().info(
-                        f'avoidance aborted: stale track misses={misses} -> raceline')
-                    self._avoid_state = None
-                    self._clear_candidates()
-                    return self._build_passthrough(), 'free'
-
-                # 상대차가 충분히 멀어졌으면 회피 해제
-                ox, oy = float(self.track[0][0]), float(self.track[0][1])
-                s_opp, _ = self.to_frenet(ox, oy)
-                gap_now = (s_opp - self.ego_s) % self.s_total
-                if gap_now > self.trigger_range * 2.0:
-                    self.get_logger().info(
-                        f'avoidance aborted: opponent far gap={gap_now:.2f} -> raceline')
-                    self._avoid_state = None
-                    self._clear_candidates()
-                    return self._build_passthrough(), 'free'
-
-                # 코너 진입 시 회피 중단 → trailing
-                _, kappa_now = self._psi_kappa_at(self.ego_s)
-                if abs(kappa_now) > 0.3:
-                    self.get_logger().info(
-                        f'avoidance aborted: corner kappa={kappa_now:.3f} -> trailing')
-                    self._avoid_state = None
-                    self._clear_candidates()
-                    return self._build_trailing(), 'trailing'
-                # Keep the committed candidate visible until ego passes s_d.
-                return self._build_from_avoid_state(st), 'spline_avoid'
-
-        # (B) not committed -> try new avoidance
-        if self.track is None:
-            self._clear_candidates()
+        """Trailing only (avoidance disabled)."""
+        if self.track is None or self.track[3] < 3:
             return self._build_passthrough(), 'free'
-
-        ox, oy, vx_obs, vy_obs = self.track[0]
-        opp_speed = math.hypot(vx_obs, vy_obs)
-        s_obs, d_obs = self.to_frenet(ox, oy)
-        gap = (s_obs - self.ego_s) % self.s_total
-
-        dl_obs = self._dl_at(s_obs)
-        dr_obs = self._dr_at(s_obs)
-        on_track = -dr_obs < d_obs < dl_obs
-
-        # 장애물이 트랙에 있으면 일단 trailing 유지
-        if not on_track:
-            self._clear_candidates()
-            return self._build_passthrough(), 'free'
-
-        # trigger_range 밖이면 trailing (뒤따르기)
-        if gap >= self.trigger_range:
-            self._clear_candidates()
-            return self._build_trailing(), 'trailing'
-
-        in_front = 0.0 < gap < self.trigger_range
-
-        # 동적 차량 → trailing, 정적 장애물 → avoidance
-        if self.track_is_dynamic:
-            self._clear_candidates()
-            return self._build_trailing(), 'trailing'
-
-        # 트랙이 충분히 넓을 때만 추월 시도
-        min_width = 0.35 * 2 + self.margin * 2
-        if (dl_obs + dr_obs) < min_width:
-            self._clear_candidates()
-            return self._build_trailing(), 'trailing'
-
-        if gap < self.s_in:
-            self.get_logger().warn(
-                f'gap={gap:.2f} < s_in={self.s_in:.2f} -> trailing fallback')
-            self._clear_candidates()
-            return self._build_trailing(), 'trailing'
-
-        # 상대차 위치 예측 - Frenet s축 전진 (코너에서도 궤적 추종)
-        # Cartesian 속도 기반 예측은 코너에서 직선으로 날아가 인코스 오판 유발
-        opp_speed = math.hypot(vx_obs, vy_obs)
-        t_arrive  = gap / max(self.ev, 1.0)
-        t_pred    = min(max(t_arrive, 1.5), 5.0)
-        s_pred    = (s_obs + opp_speed * t_pred) % self.s_total
-        d_pred    = d_obs   # 횡방향은 현재 위치 유지
-        pred_ox, pred_oy = self.to_cartesian(s_pred, d_pred)
-
-        self.get_logger().debug(
-            f'opp predict (frenet): t={t_pred:.2f}s  s {s_obs:.2f}->{s_pred:.2f}  d={d_pred:.2f}')
-
-        # 코너에서는 아웃코스 방향 candidate만 생성
-        # kappa>0(좌코너): 안=left(+d), 밖=right(-d) → outside_sign=-1
-        # kappa<0(우코너): 안=right(-d), 밖=left(+d) → outside_sign=+1
-        s_obs_rel = self.ego_s + gap
-        _, kappa_obs = self._psi_kappa_at(s_obs)
-        if abs(kappa_obs) > 0.4:
-            outside_sign = -math.copysign(1.0, kappa_obs)
-            label = 'out_left' if outside_sign > 0 else 'out_right'
-            cands = [self._make_avoidance_state(
-                s_obs_rel, outside_sign * self.d_safe, label, d_pred)]
-            self.get_logger().debug(
-                f'corner kappa={kappa_obs:.3f} -> {label} only')
-        else:
-            cands = [
-                self._make_avoidance_state(s_obs_rel, +self.d_safe, 'left',  d_pred),
-                self._make_avoidance_state(s_obs_rel, -self.d_safe, 'right', d_pred),
-            ]
-
-        results = []
-        for st in cands:
-            if st is None:
-                continue
-            cost = self._evaluate_state(st, pred_ox, pred_oy)
-            results.append({'state': st, 'cost': cost})
-        self._publish_candidates(results)
-
-        feasible = [r for r in results if r['cost'] is not None]
-        if not feasible:
-            self.get_logger().warn(
-                'both left/right candidates infeasible -> trailing fallback')
-            return self._build_trailing(), 'trailing'
-
-        best = min(feasible, key=lambda r: r['cost'])
-        self._avoid_state = best['state']  # commit
-        self.get_logger().info(
-            f"avoidance start: '{best['state']['label']}' "
-            f"(cost={best['cost']:.3f}, s_d={best['state']['s_d']:.2f})")
-        return self._build_from_avoid_state(self._avoid_state), 'spline_avoid'
+        return self._build_trailing(), 'trailing'
 
     # ================================================================== #
     # Avoidance state + feasibility

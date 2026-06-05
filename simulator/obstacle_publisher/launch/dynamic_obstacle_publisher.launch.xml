@@ -2,7 +2,7 @@
 <launch>
   <!-- Dynamic Obstacle Launcher -->
   <arg name="map" description="Map name to use (same as low_level.launch.xml)"/>
-  <arg name="trajectory_csv" default="centerline.csv" description="CSV file name for obstacle trajectory (in maps/[map]/ directory)"/>
+  <arg name="trajectory_csv" default="global_waypoints.csv" description="CSV file name for obstacle trajectory (in maps/[map]/ directory)"/>
   <arg name="speed_scaler" default="0.7" description="Speed multiplier for dynamic obstacle"/>
   <arg name="constant_speed" default="false" description="Use constant speed instead of trajectory speed"/>
   <arg name="starting_s" default="0.0" description="Initial position on trajectory (meters)"/>

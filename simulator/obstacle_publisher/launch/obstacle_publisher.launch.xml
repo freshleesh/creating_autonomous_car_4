@@ -3,7 +3,7 @@
   <!-- Arguments -->
   <arg name="map_name" default="f" description="Map name (will search in stack_master/maps/)"/>
   <arg name="enable_dynamic" default="false" description="Enable dynamic obstacle"/>
-  <arg name="trajectory_csv" default="centerline.csv" description="CSV file name for obstacle trajectory"/>
+  <arg name="trajectory_csv" default="global_waypoints.csv" description="CSV file name for obstacle trajectory"/>
   <arg name="speed_scaler" default="1.0" description="Speed multiplier for dynamic obstacle"/>
   <arg name="constant_speed" default="false" description="Use constant speed instead of trajectory speed"/>
   <arg name="starting_s" default="0.0" description="Initial position on centerline (meters)"/>
