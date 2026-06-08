@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+
+    # ---- topics ------------------------------------------------------------
+    scan_topic:       /scan
+    odom_topic:       /vesc/odom        # real car: /car_state/odom
+    map_topic:        /map
+    detections_topic: /detections       # consumed by MPPI when use_detection:=true
+    markers_topic:    /detection_sh/markers
+
+    # ---- range gate --------------------------------------------------------
+    r_min:  0.05    # [m] drop returns closer than this
+    r_max:  10.0    # [m] drop returns farther than this
+
+    # ---- wall subtraction --------------------------------------------------
+    wall_clear_radius:  0.1   # [m] drop a point if a map cell within this radius is occupied
+    occupied_threshold: 50     # OccupancyGrid value (0..100) treated as wall
+    laser_to_base_x:    0.27   # [m] MUST match MPPI laser_x_offset
+
+    # ---- output shaping ----------------------------------------------------
+    sort_by_range: true   # nearest-first (so MPPI's max_obstacles cap keeps closest)
+    max_obstacles: 0      # 0 = publish all survivors; >0 caps the count here
+    obstacle_size: 0.05   # [m] reported Obstacle.size (MPPI ignores it)
+
+    publish_markers: true # /detection_sh/markers (cyan spheres, map frame)

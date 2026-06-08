@@ -17,19 +17,51 @@
 
   <arg name="map"            description="Map name (folder in stack_master/maps/)"/>
   <arg name="sim"            default="false" description="true: sim (/vesc/odom from gym_bridge, map frame); false: real car (remap to /car_state/odom from EKF)"/>
-  <arg name="use_detection"  default="false" description="true: subscribe to /detections and add an opponent keep-out cost; also launches detect_node"/>
+  <arg name="use_detection"  default="false" description="true: subscribe to /detections and add an opponent keep-out cost; also launches the detection_sh detector"/>
   <arg name="config"         default="$(find-pkg-share stack_master)/config/mppi.yaml"/>
+  <arg name="detection_config"
+       default="$(find-pkg-share stack_master)/config/detection_sh_v2.yaml"
+       description="YAML tunables for detection_sh_v2 (the /detections source)"/>
 
   <!-- Global waypoints publisher (loads stack_master/maps/<map>/global_waypoints.csv) -->
   <node pkg="planner" exec="waypoint_publisher" name="waypoint_publisher" output="screen">
     <param name="map_name" value="$(var map)"/>
   </node>
 
-  <!-- Optional perception: LiDAR-based obstacle detection.
-       Publishes /detections (ObstacleArray, frame=laser) which the MPPI node
-       transforms to map frame using ego pose + a static laser x-offset. -->
+  <!-- Optional perception: detection_sh_v2 reference-line proximity detector.
+       Gates the scan by range, transforms each point to the map frame and keeps
+       only points within ref_dist_thresh (0.2 m) of the reference line, then
+       publishes every survivor as an Obstacle (ObstacleArray, frame=laser) on
+       /detections. MPPI transforms them back to map frame using ego pose +
+       laser_x_offset (0.27, matched by laser_to_base_x). Needs /global_waypoints
+       (waypoint_publisher above). Tunables: config/detection_sh_v2.yaml. -->
   <group if="$(var use_detection)">
-    <node pkg="perception" exec="detect_node" name="detect_node" output="screen"/>
+    <group if="$(var sim)">
+      <node pkg="perception" exec="detection_sh_v2" name="detection_sh_v2" output="screen">
+        <param from="$(var detection_config)"/>
+        <param name="odom_topic" value="/vesc/odom"/>
+      </node>
+    </group>
+    <group unless="$(var sim)">
+      <node pkg="perception" exec="detection_sh_v2" name="detection_sh_v2" output="screen">
+        <param from="$(var detection_config)"/>
+        <param name="odom_topic" value="/car_state/odom"/>
+      </node>
+    </group>
+  </group>
+
+  <!-- Lap analyzer: prints lap time / top speed / distance / tracking-error
+       integral per lap, and publishes the driven trajectory as a 3-D LINE_STRIP
+       (z = speed). Subscribes /global_waypoints + odom. -->
+  <group if="$(var sim)">
+    <node pkg="controller" exec="lap_analyzer" name="lap_analyzer" output="screen">
+      <param name="odom_topic" value="/vesc/odom"/>
+    </node>
+  </group>
+  <group unless="$(var sim)">
+    <node pkg="controller" exec="lap_analyzer" name="lap_analyzer" output="screen">
+      <param name="odom_topic" value="/car_state/odom"/>
+    </node>
   </group>
 
   <!-- MPPI controller.

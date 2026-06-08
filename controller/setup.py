@@ -33,6 +33,7 @@ setup(
             'pp_v6_node         = controller.PP_v6:main',
             'stanley_node       = controller.Stanley:main',
             'mppi_node          = controller.MPPI:main',
+            'lap_analyzer       = controller.lap_analyzer:main',
         ],
     },
 )

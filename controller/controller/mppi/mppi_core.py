@@ -144,7 +144,7 @@ class MPPI:
     # Public update
     # ------------------------------------------------------------------
     def update(self, x0, reference, obstacles, weights,
-               temperature=0.01, damping=0.001, n_iter=1):
+               temperature=0.01, damping=0.001, n_iter=1, n_shift=1):
         x0 = jnp.asarray(x0, dtype=jnp.float32)
         reference = jnp.asarray(reference, dtype=jnp.float32)
         obstacles = jnp.asarray(obstacles, dtype=jnp.float32)
@@ -152,11 +152,19 @@ class MPPI:
         temperature = jnp.asarray(temperature, dtype=jnp.float32)
         damping = jnp.asarray(damping, dtype=jnp.float32)
 
-        # Shift warm-start: drop first step, append zero.
-        a_opt = jnp.concatenate(
-            [self.a_opt[1:], jnp.zeros((1, self.A_SHAPE), dtype=jnp.float32)],
-            axis=0,
-        )
+        # Shift warm-start by however many prediction steps of real time have
+        # elapsed since the last solve (n_shift). Decouples the control rate
+        # from sim_dt: replanning faster than sim_dt → n_shift=0 most cycles
+        # (re-optimize the still-aligned plan), so high-rate control no longer
+        # races the warm-start ahead of reality.
+        k = int(max(0, min(int(n_shift), self.n_steps)))
+        if k > 0:
+            a_opt = jnp.concatenate(
+                [self.a_opt[k:], jnp.zeros((k, self.A_SHAPE), dtype=jnp.float32)],
+                axis=0,
+            )
+        else:
+            a_opt = self.a_opt
 
         traj_opt = None
         for _ in range(max(1, int(n_iter))):

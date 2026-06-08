@@ -24,6 +24,8 @@ setup(
         'console_scripts': [
             'detect_node   = perception.detect_ros:main',
             'tracking_node = perception.tracking_ros:main',
+            'detection_sh  = perception.detection_sh:main',
+            'detection_sh_v2 = perception.detection_sh_v2:main',
         ],
     },
 )

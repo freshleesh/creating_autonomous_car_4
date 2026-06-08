@@ -1,16 +1,16 @@
 mppi:
   ros__parameters:
     # Control loop
-    control_rate_hz:    20.0
+    control_rate_hz:    50.0
 
     # Rollout shape (changing these triggers a JAX recompile on next launch)
     n_samples:           8192
     n_steps:             5
-    sim_time_step:       0.1
+    sim_time_step:       0.05
     n_iterations:          1
 
     # Sampling std (in normalized [-1, 1] action space)
-    control_std_steer:   0.5
+    control_std_steer:   0.9
     control_std_accel:   0.5
 
     # Half-range scales: normalized 1.0 → this many physical units
@@ -20,7 +20,10 @@ mppi:
     # Reference picking from /global_waypoints
     use_waypoint_speed:  true
     ref_speed:           2.0
-    ref_speed_scale:     1.0
+    ref_speed_scale:     2.0
+    # Single grip knob: cap corner speed so v^2*|kappa| <= max_lat_accel.
+    # Lower if the car slides in corners; 0 disables. (dry grip ~ mu*g ~ 10.3)
+    max_lat_accel:       7.0   # m/s^2
 
     # Cost weights
     xy_weight:           1.0
@@ -28,19 +31,19 @@ mppi:
     yaw_weight:          0.2
 
     # MPPI hyperparameters
-    temperature:         0.01
+    temperature:         0.08
     damping:             0.001
 
     # Output clamps
     max_steering_angle:  0.4
     min_speed:           0.0
-    max_speed:           6.0
+    max_speed:           10.0
 
     # Detection-based opponent keep-out
     use_detection:       true
-    max_obstacles:         8
-    obstacle_weight:    50.0
-    obstacle_radius:     0.6
+    max_obstacles:         16
+    obstacle_weight:    10.0
+    obstacle_radius:     0.05
     laser_x_offset:      0.27
     detection_timeout:   0.5
 

@@ -60,6 +60,9 @@ PARAMS = {
     'ref_speed':              2.0,    # m/s, fallback when waypoint vx is 0
     'use_waypoint_speed':     True,
     'ref_speed_scale':        1.0,
+    # Curvature speed cap on the reference: v_ref <= sqrt(max_lat_accel/|kappa|).
+    # Single grip knob — lower it if the car slides in corners. 0 disables.
+    'max_lat_accel':          8.0,    # m/s^2 (dry F1TENTH grip ~ mu*g ~ 10.3)
     # cost weights
     'xy_weight':              1.0,
     'velocity_weight':        0.1,
@@ -129,11 +132,17 @@ class MPPINode(Node):
         self.odom = None
         self.waypoints = None        # np.ndarray (N, 4): [x, y, v, psi]
         self.waypoint_s = None       # cumulative arc length
+        self.waypoint_kappa = None   # np.ndarray (N,): signed curvature [1/m]
         self.waypoint_total_len = 0.0
         self.last_drive_steer = 0.0
         self.last_drive_speed = 0.0
         self.last_detections_time = None
         self.obstacles_world = np.full((self.max_obstacles, 2), 1e6, dtype=np.float32)
+
+        # Time-aware warm-start bookkeeping (decouples control rate from sim_dt).
+        self._last_plan_time = None
+        self._shift_accum = 0.0
+        self.control_dt = 1.0 / float(p('control_rate_hz'))
 
         latched = QoSProfile(
             depth=1,
@@ -188,8 +197,17 @@ class MPPINode(Node):
         diffs = np.linalg.norm(np.diff(arr[:, :2], axis=0), axis=1)
         s = np.concatenate([[0.0], np.cumsum(diffs)])
         loop_close = float(np.linalg.norm(arr[0, :2] - arr[-1, :2]))
+        # Signed curvature via 3-point finite differences (closed-loop wrap).
+        x, y = arr[:, 0], arr[:, 1]
+        xn, xp = np.roll(x, -1), np.roll(x, 1)
+        yn, yp = np.roll(y, -1), np.roll(y, 1)
+        dx, dy = (xn - xp) * 0.5, (yn - yp) * 0.5
+        ddx, ddy = xn - 2 * x + xp, yn - 2 * y + yp
+        denom = np.maximum((dx * dx + dy * dy) ** 1.5, 1e-9)
+        kappa = (dx * ddy - dy * ddx) / denom
         self.waypoints = arr
         self.waypoint_s = s.astype(np.float32)
+        self.waypoint_kappa = kappa.astype(np.float32)
         self.waypoint_total_len = float(s[-1] + loop_close)
         self._waypoint_source = source
         self.get_logger().info(
@@ -244,6 +262,7 @@ class MPPINode(Node):
         ref_v_param = float(self.get_parameter('ref_speed').value)
         use_wp_v = bool(self.get_parameter('use_waypoint_speed').value)
         v_scale = float(self.get_parameter('ref_speed_scale').value)
+        max_lat = float(self.get_parameter('max_lat_accel').value)
 
         ref = np.zeros((self.n_steps, 4), dtype=np.float32)
         s = s0
@@ -258,6 +277,11 @@ class MPPINode(Node):
             j = max(0, min(j, N - 1))
             wp_v = float(self.waypoints[j, 2])
             v_ref = (wp_v if (use_wp_v and wp_v > 1e-3) else ref_v_param) * v_scale
+            # Curvature speed cap: keep lateral accel v^2*|kappa| <= max_lat_accel
+            # so MPPI tracks a slower corner target and brakes ahead of it.
+            kap = abs(float(self.waypoint_kappa[j]))
+            if max_lat > 0.0 and kap > 1e-4:
+                v_ref = min(v_ref, math.sqrt(max_lat / kap))
             v_step = v_ref
             ref[t, 0] = self.waypoints[j, 0]
             ref[t, 1] = self.waypoints[j, 1]
@@ -322,9 +346,23 @@ class MPPINode(Node):
         temperature = float(self.get_parameter('temperature').value)
         damping = float(self.get_parameter('damping').value)
 
+        # Real time elapsed since the last solve → how many sim_dt prediction
+        # steps to shift the warm-start by (0 most cycles at 50 Hz/sim_dt=0.05).
+        now = self.get_clock().now()
+        if self._last_plan_time is None:
+            dt_real = self.control_dt
+        else:
+            dt_real = (now - self._last_plan_time).nanoseconds * 1e-9
+        self._last_plan_time = now
+        dt_real = float(np.clip(dt_real, 0.0, 5.0 * self.control_dt))
+        self._shift_accum += dt_real
+        n_shift = int(self._shift_accum / self.sim_dt)
+        self._shift_accum -= n_shift * self.sim_dt
+
         a_opt, traj_opt = self.mppi.update(
             x0, reference, obstacles, weights,
             temperature=temperature, damping=damping, n_iter=self.n_iterations,
+            n_shift=n_shift,
         )
 
         # First action in normalized units → physical units → next-step state.
@@ -332,7 +370,11 @@ class MPPINode(Node):
         steer_vel = float(u0_norm[0]) * float(self.get_parameter('steer_vel_scale').value)
         accel = float(u0_norm[1]) * float(self.get_parameter('accel_scale').value)
 
-        # Command: predicted steering angle one step ahead, predicted speed one step ahead.
+        # Command: speed/steering setpoint at the end of the first prediction
+        # step. Projected over sim_dt (NOT the control period): the low-level
+        # speed PID accelerates proportional to (cmd_speed - v), so shrinking
+        # this dt to 1/control_rate starved acceleration ~2.5x and, via the
+        # slow car vs fast reference mismatch, caused hard corner cut-in.
         cmd_steer = float(np.clip(self.last_drive_steer + steer_vel * self.sim_dt,
                                   -self.max_steer, self.max_steer))
         cmd_speed = float(np.clip(v + accel * self.sim_dt, self.min_speed, self.max_speed))
