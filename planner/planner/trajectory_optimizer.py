@@ -23,7 +23,7 @@ class TrajectoryOptimizer(Node):
         self.declare_parameter('safety_margin', 0.20)   # [m]   clearance from each wall
         self.declare_parameter('margin_inner',  0.30)   # [m]   margin to the inside-of-corner wall
         self.declare_parameter('margin_outer',  -1.0)   # [m]   margin to the outside-of-corner wall (<0 → safety_margin + 0.15)
-        self.declare_parameter('v_max',         6.0)    # [m/s] vehicle speed cap
+        self.declare_parameter('v_max',         8.0)    # [m/s] vehicle speed cap
         self.declare_parameter('a_lat_max',     6.0)    # [m/s^2] lateral grip limit
         self.declare_parameter('a_long_max',    4.0)    # [m/s^2] longitudinal accel limit
         self.declare_parameter('target_ds',     0.25)   # [m]   uniform ds for QP input/output
@@ -575,13 +575,13 @@ class TrajectoryOptimizer(Node):
         #       smoothly through the corner.
         v_top      = v_max
         a_accel    = 0.70 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
-        a_brake    = 0.70 * a_long_max          # [v14] RAISED 0.45→0.70 to brake LATER. Counter-intuitive
+        a_brake    = 1.20 * a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
                                                 #   but physical: braking-zone length = Δv²/(2·a_brake), so a
                                                 #   LOWER a_brake stretches the slow-down EARLIER. The car
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.3                       # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.9                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 
@@ -599,10 +599,13 @@ class TrajectoryOptimizer(Node):
         # We blend linearly from cap_mild to cap_sharp as |κ| rises to
         # KAPPA_HARD, so weak corners speed up the most while hairpins stay
         # safe.
-        cap_mild   = 1.80       # gentle corners already OK (understeer cancels the cut there)
-        cap_sharp  = 1.80       # [v15] 1.22→1.40 (two steps): TIGHT corners were cutting inside badly
-                                #   (low speed there → little understeer → cut dominates). Raise the
-                                #   tight-corner speed specifically to generate the cancelling understeer.
+        # cap_factor NEUTRALIZED to 1.0. The cornering speed limit now lives here
+        # in the trajectory (a_lat_max=15 from yaml) and must equal PP's old NEAR
+        # hard cap exactly: vx_cap = √(a_lat_max/κ)·cap_factor → √(15/κ) when
+        # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
+        # no longer re-caps corner speed; the trajectory profile IS the limit now.
+        cap_mild   = 1.60       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
+        cap_sharp  = 1.40       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
@@ -616,12 +619,11 @@ class TrajectoryOptimizer(Node):
         # straight ahead, the higher we let v_top go locally.
         kappa_curve_thresh = 0.10       # [1/m] |κ| above this counts as curving
         lookahead_max      = 12.0       # [m]   look this far ahead to decide
-        boost_max          = 1.90       # peak boost on a fully clear lookahead (straights are safe)
-        # Straights are the safe place to be fast, so we push the boost hard.
-        # On a full ~12 m clear stretch the straight target ≈ v_max·1.90.
-        # Short straights won't reach it — the backward (braking) pass caps the
-        # peak to whatever can still be shed before the next corner — so this
-        # is self-limiting and stays safe.
+        boost_max          = 1.0        # straight over-boost OFF → straights = v_max exactly (raise >1 here, PP boost stays off, for long-straight boost).
+        # The old 1.90 pushed the straight target to v_max·1.90 (=15.2 m/s at
+        # v_max=8) which is the main reason straights ran "way too fast". With
+        # boost_max=1.0 the straight target is exactly v_max — predictable and
+        # tame. Re-raise (e.g. 1.2–1.5) later once the baseline feels stable.
         kappa_abs = np.abs(kappa)
         straight_dist = np.zeros(N_pts)
         for i in range(N_pts):

@@ -49,12 +49,12 @@ PARAMS = {
     # [v3] Curvature-adaptive lookahead: L_f shrinks at corners even before CTE grows
     #   L_f = clip(gain * v / (1 + cte_gain*|CTE| + kappa_gain*|kappa|), min, max)
     'pp_kappa_lookahead_gain': 1.5,
-    # [v5] 2-stage kappa-based speed limit
-    #   Far  (preview_n개): sqrt(a_lat_max * far_factor / kappa) → 부드러운 사전 감속
-    #   Near (alat_near_n개): sqrt(a_lat_max / kappa)           → 코너 직전 하드 제한
-    'pp_a_lat_max':       2.5,   # 하드 제한 기준 횡가속도 [m/s²]
-    'pp_alat_far_factor': 3.0,   # 원거리 소프트 제한 완화 배수 (클수록 늦게 감속)
-    'pp_alat_near_n':     15,    # 근거리 하드 제한 윈도우 (15개 ≈ 2.5m)
+    # [removed] 2-stage kappa-based corner speed cap. The cornering speed limit
+    #   now lives entirely in the trajectory optimizer (a_lat_max=15, cap_factor=1.0
+    #   → vx = √(15/κ)). PP follows the waypoint vx profile and no longer re-caps it.
+    #   pp_a_lat_max / pp_alat_far_factor are gone; pp_alat_near_n is kept only as
+    #   the look-ahead window for the straight-boost gate below.
+    'pp_alat_near_n':     15,    # 직선 부스트 판정용 전방 윈도우 (15개 ≈ 2.5m)
     # [v6] CTE derivative damping
     'pp_Kd_cte':           0.05,
     # [v6] Behind kappa check: 코너 탈출 직후 부스트 방지
@@ -118,8 +118,6 @@ class PPNode(Node):
         self.preview_n            = int(p('pp_preview_n'))
         self.preview_blend        = p('pp_preview_blend')
         self.kappa_lookahead_gain = p('pp_kappa_lookahead_gain')
-        self.a_lat_max            = p('pp_a_lat_max')
-        self.alat_far_factor      = p('pp_alat_far_factor')
         self.alat_near_n          = int(p('pp_alat_near_n'))
         self.Kd_cte               = p('pp_Kd_cte')
         self.alat_behind_n        = int(p('pp_alat_behind_n'))
@@ -159,7 +157,7 @@ class PPNode(Node):
         self.create_timer(self._dt, self._loop)
 
         self.get_logger().info(
-            f'PPNode v6 ready | v_scale={self.v_scale:.2f}  a_lat_max={self.a_lat_max:.1f}'
+            f'PPNode v6 ready | v_scale={self.v_scale:.2f}  corner-cap=trajectory(√(a_lat/κ))'
             f'  steer_rate={self.steer_rate_max:.1f}  L_f=[{self.lookahead_min:.1f},{self.lookahead_max:.1f}]'
         )
 
@@ -355,28 +353,31 @@ class PPNode(Node):
                                self._prev_steer + max_chg))
         self._prev_steer = delta
 
-        # 5) speed — 2-stage kappa-based limit
-        speed = float(self.waypoints[target_idx].vx_mps) * self.v_scale
+        # 5) speed — read the trajectory velocity profile at the car's CURRENT
+        #   position (nearest_idx), min over a short forward window so the car
+        #   eases smoothly into an upcoming slower corner.
+        #
+        #   ⚠️ STUTTER FIX: speed must NOT be read from target_idx (the lookahead
+        #   point). target_idx is chosen by walking forward the SPEED-ADAPTIVE
+        #   lookahead (lookahead ∝ v), so on a corner approach it flips between the
+        #   fast straight waypoint and the slow corner waypoint as v changes →
+        #   vx[target_idx] oscillates → throttle surges on/off (멈칫멈칫 / 가속을
+        #   줬다 안 줬다). nearest_idx is position-based and stable; the forward-min
+        #   adds a touch of anticipation without reintroducing the lookahead loop.
+        #   The cornering speed limit itself lives in the trajectory (√(a_lat/κ)).
+        near_indices = [(nearest_idx + i) % N for i in range(1, self.alat_near_n + 1)]
+        near_kappas  = [abs(float(self.waypoints[i].kappa_radpm)) for i in near_indices]
+        max_kappa_near = max(near_kappas) if near_kappas else 0.0
+
+        speed = min(
+            float(self.waypoints[(nearest_idx + i) % N].vx_mps)
+            for i in range(0, self.alat_near_n + 1)
+        ) * self.v_scale
         if speed < 0.1:
             speed = 1.0
 
-        # Stage 1 — FAR soft cap (차량 실제 위치 nearest_idx 기준)
-        #   target_idx 기준이면 코너에서 target이 이미 직선에 있어 cap이 안 걸림
-        #   nearest_idx 기준으로 하면 차가 직선에 있을 때 다음 코너를 정확히 봄
+        # preview_indices kept ONLY for the RViz preview highlight (no speed effect).
         preview_indices = [(nearest_idx + i) % N for i in range(1, self.preview_n + 1)]
-        far_kappas = [abs(float(self.waypoints[i].kappa_radpm)) for i in preview_indices]
-        max_kappa_far = max(far_kappas) if far_kappas else 0.0
-        if max_kappa_far > 1e-6:
-            v_far_cap = math.sqrt(self.a_lat_max * self.alat_far_factor / max_kappa_far)
-            speed = min(speed, v_far_cap)
-
-        # Stage 2 — NEAR hard cap (nearest_idx 기준)
-        near_indices = [(nearest_idx + i) % N for i in range(1, self.alat_near_n + 1)]
-        near_kappas = [abs(float(self.waypoints[i].kappa_radpm)) for i in near_indices]
-        max_kappa_near = max(near_kappas) if near_kappas else 0.0
-        if max_kappa_near > 1e-6:
-            v_near_cap = math.sqrt(self.a_lat_max / max_kappa_near)
-            speed = min(speed, v_near_cap)
 
         # [v4] CTE-proportional speed reduction
         speed = speed / (1.0 + self.k_v_cte * cte * cte)

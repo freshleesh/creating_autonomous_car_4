@@ -4,10 +4,10 @@
     pp_wheelbase:      0.33    # F1TENTH chassis, do NOT change [m]
     pp_max_steer:      0.4     # mechanical steering limit [rad] (~23°)
     control_rate_hz:   50.0    # control loop rate [Hz]
-    pp_speed_boost:    1.3     # speed multiplier on clear straights
+    pp_speed_boost:    1.0     # PP straight boost OFF — straight speed managed only in trajectory (v_max)
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
-    pp_v_max_boost:    9.0     # boosted speed cap [m/s]
+    pp_v_max_boost:    9.0     # safety ceiling = v_max (PP boost off, so this just caps at 9, never boosts)
 
     # [v8] CALM tuning. Priority is now STABILITY over tracking accuracy: the car
     #   was darting off the line at speed and then OSCILLATING trying to recover.
@@ -79,21 +79,19 @@
                                     #   long enough to be stable under latency. Mild trade: a little corner
                                     #   cutting (~0.08 m) for solid, non-oscillating line following.
 
-    # [v3] Lateral acceleration cap: speed ≤ sqrt(a_lat_max / kappa)
-    #   physics-based hard limit — lower = safer corners, higher = faster
-    pp_a_lat_max: 8.0     # [v13] 7.0→8.0 (two steps): understeer was insufficient to cancel the inside-cut, so raise corner speed more to generate more push-wide.
-
-    # [v3] FAR (preview) soft cap: speed ≤ sqrt(a_lat_max * far_factor / kappa_far).
-    #   Larger = looser = brakes later/abruptly at the near cap. Lowered from 3.0
-    #   so the preview cap engages earlier → gentle pre-braking, smooth corner entry.
-    pp_alat_far_factor: 5.0    # [v14] 1.8→3.0: loosen the FAR preview cap a lot → the soft pre-braking ~5 m out almost stops → braking starts much LATER (closer to the corner)
+    # [removed] pp_a_lat_max / pp_alat_far_factor — the 2-stage kappa corner-speed
+    #   cap (√(a_lat/κ)) has been deleted from PP_v6.py. The cornering speed limit
+    #   now lives in the trajectory optimizer: a_lat_max=15 + cap_factor=1.0 makes
+    #   the waypoint vx profile equal to PP's old NEAR hard cap √(15/κ). PP just
+    #   follows that profile.
 
     # [v4] CTE-proportional speed reduction: speed /= (1 + k_v_cte * cte²)
     #   (not in this file before → used code default 0.8, which over-slowed when
     #    the car cut the inside of a corner; lowered now that the cut is reduced)
     pp_k_v_cte: 0.8     # [revert v10→v8.1] back to 0.8: the 2.2 value was only there to mask the too-fast corners
 
-    # [v3] Global speed scale — trajectory optimizer ran at a_lat=6 m/s² (too fast for PP)
-    #   0.65 → 5.4 m/s becomes 3.5 m/s at corners (PP can actually track this)
-    #   tune: 0.8 if still too slow, 0.5 if still hitting walls
-    pp_v_scale: 0.90    # [v13] 0.68→0.76 (two steps): more overall/corner speed to feed the wanted understeer. Long corner lookahead (v11) keeps it stable.
+    # [v3] Global speed scale — multiply ALL waypoint vx by this factor.
+    #   0.90→1.0: the trajectory now bakes in the corner speed limit directly
+    #   (a_lat_max=15, cap_factor=1.0), so PP follows the profile as-is instead of
+    #   scaling it down. Lower this again only if the car runs wide/hits walls.
+    pp_v_scale: 1.0
