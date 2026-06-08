@@ -62,19 +62,28 @@ class MPPI:
         states     : (n_steps, 5)
         reference  : (n_steps, 4) — [ref_x, ref_y, ref_v, ref_psi]
         obstacles  : (max_obs, 2) — world XY; unused slots set far away
-        weights    : (5,) — [w_xy, w_v, w_yaw, w_obs, obs_radius]
+        weights    : (6,) — [w_contour, w_lag, w_v, w_yaw, w_obs, obs_radius]
         """
         finite = jnp.isfinite(states).all(axis=1).astype(jnp.float32)
         invalid_pen = (1.0 - finite) * 1e3
         st = jnp.nan_to_num(states, nan=1e3, posinf=1e3, neginf=-1e3)
 
-        dx = reference[:, 0] - st[:, 0]
-        dy = reference[:, 1] - st[:, 1]
-        xy_cost = jnp.sqrt(dx * dx + dy * dy)
+        # Tracking error split into path-frame components via the reference
+        # heading: contour = perpendicular (off-line) error, lag = along-path
+        # error. Penalising contour hard and lag soft keeps the car ON the line
+        # instead of cutting corners — a lumped Euclidean point distance lets the
+        # optimiser trade off-line error for a shorter inner chord. lag still
+        # supplies forward progress (must reach the t-th point by step t).
+        ex = reference[:, 0] - st[:, 0]
+        ey = reference[:, 1] - st[:, 1]
+        ref_psi = reference[:, 3]
+        cos_p, sin_p = jnp.cos(ref_psi), jnp.sin(ref_psi)
+        lag = ex * cos_p + ey * sin_p
+        contour = -ex * sin_p + ey * cos_p
+        xy_cost = weights[0] * jnp.abs(contour) + weights[1] * jnp.abs(lag)
 
         v_cost = jnp.abs(reference[:, 2] - st[:, 3])
 
-        ref_psi = reference[:, 3]
         st_psi = st[:, 4]
         yaw_cost = (jnp.abs(jnp.sin(ref_psi) - jnp.sin(st_psi))
                     + jnp.abs(jnp.cos(ref_psi) - jnp.cos(st_psi)))
@@ -83,14 +92,14 @@ class MPPI:
         # states_xy: (n_steps, 1, 2), obstacles: (1, max_obs, 2)
         d_obs = states[:, None, :2] - obstacles[None, :, :]      # (n_steps, max_obs, 2)
         d2 = jnp.sum(d_obs * d_obs, axis=-1)                     # (n_steps, max_obs)
-        radius = jnp.maximum(weights[4], 1e-3)
+        radius = jnp.maximum(weights[5], 1e-3)
         opp_cost = jnp.sum(jnp.exp(-d2 / (2.0 * radius * radius)), axis=-1)  # (n_steps,)
 
         reward = (
-            -weights[0] * xy_cost
-            - weights[1] * v_cost
-            - weights[2] * yaw_cost
-            - weights[3] * opp_cost
+            -xy_cost
+            - weights[2] * v_cost
+            - weights[3] * yaw_cost
+            - weights[4] * opp_cost
             - invalid_pen
         )
         return reward  # (n_steps,)

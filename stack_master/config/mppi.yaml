@@ -5,13 +5,13 @@ mppi:
 
     # Rollout shape (changing these triggers a JAX recompile on next launch)
     n_samples:           8192
-    n_steps:             5
+    n_steps:             10
     sim_time_step:       0.05
     n_iterations:          1
 
     # Sampling std (in normalized [-1, 1] action space)
     control_std_steer:   0.9
-    control_std_accel:   0.5
+    control_std_accel:   1.0
 
     # Half-range scales: normalized 1.0 → this many physical units
     steer_vel_scale:     3.2   # rad/s
@@ -20,14 +20,20 @@ mppi:
     # Reference picking from /global_waypoints
     use_waypoint_speed:  true
     ref_speed:           2.0
-    ref_speed_scale:     2.0
+    ref_speed_scale:     10.0
+    # Reference points are spaced by the car's ACTUAL speed (floored), not the
+    # speed target — so they don't get thrown ahead around corners (cut-in fix).
+    ref_pos_speed_floor: 1.0   # m/s
     # Single grip knob: cap corner speed so v^2*|kappa| <= max_lat_accel.
     # Lower if the car slides in corners; 0 disables. (dry grip ~ mu*g ~ 10.3)
     max_lat_accel:       7.0   # m/s^2
 
-    # Cost weights
-    xy_weight:           1.0
-    velocity_weight:     0.1
+    # Cost weights — xy error split into path-frame contour/lag (see _step_reward).
+    # contour = off-line (perpendicular) error: keep HIGH → stays on the line.
+    # lag = along-path error: keep LOW → progress without corner-cutting.
+    contour_weight:      2.0
+    lag_weight:          0.3
+    velocity_weight:     2.0
     yaw_weight:          0.2
 
     # MPPI hyperparameters

@@ -60,11 +60,17 @@ PARAMS = {
     'ref_speed':              2.0,    # m/s, fallback when waypoint vx is 0
     'use_waypoint_speed':     True,
     'ref_speed_scale':        1.0,
+    # Reference POSITIONS are spaced by the car's actual speed (not the speed
+    # target), so points land where the car can reach instead of being thrown
+    # ahead around corners. Floor keeps the spacing nonzero from standstill.
+    'ref_pos_speed_floor':    1.0,    # m/s
     # Curvature speed cap on the reference: v_ref <= sqrt(max_lat_accel/|kappa|).
     # Single grip knob — lower it if the car slides in corners. 0 disables.
     'max_lat_accel':          8.0,    # m/s^2 (dry F1TENTH grip ~ mu*g ~ 10.3)
-    # cost weights
-    'xy_weight':              1.0,
+    # cost weights — xy error split into path-frame contour/lag (see _step_reward).
+    # contour (off-line) hard, lag (along-path) soft → tracks the line, no cut-in.
+    'contour_weight':         2.0,
+    'lag_weight':             0.3,
     'velocity_weight':        0.1,
     'yaw_weight':             0.2,
     # MPPI hyperparams
@@ -254,8 +260,11 @@ class MPPINode(Node):
         d2 = (self.waypoints[:, 0] - x) ** 2 + (self.waypoints[:, 1] - y) ** 2
         return int(np.argmin(d2))
 
-    def _build_reference(self, x, y):
-        """Pick n_steps waypoints by walking along arc length at ref speed."""
+    def _build_reference(self, x, y, v):
+        """Pick n_steps reference points by walking arc length AT THE CAR'S
+        actual speed (so points land where the car can reach, not thrown ahead
+        around corners), storing the curvature-capped raceline speed as the
+        velocity target."""
         idx = self._closest_waypoint_idx(x, y)
         s0 = float(self.waypoint_s[idx])
         N = self.waypoints.shape[0]
@@ -263,15 +272,16 @@ class MPPINode(Node):
         use_wp_v = bool(self.get_parameter('use_waypoint_speed').value)
         v_scale = float(self.get_parameter('ref_speed_scale').value)
         max_lat = float(self.get_parameter('max_lat_accel').value)
+        pos_floor = float(self.get_parameter('ref_pos_speed_floor').value)
+
+        # Position spacing from the car's own speed; floored so it launches from
+        # rest. Constant over the (short) horizon — speed target drives accel.
+        v_pos = max(float(v), pos_floor)
 
         ref = np.zeros((self.n_steps, 4), dtype=np.float32)
         s = s0
-        # Initial speed for stepping: use waypoint or fallback.
-        v0 = self.waypoints[idx, 2]
-        v_step = float(v0 if (use_wp_v and v0 > 1e-3) else ref_v_param)
         for t in range(self.n_steps):
-            v_step = max(0.1, v_step * v_scale if t == 0 else v_step)
-            s = (s + v_step * self.sim_dt) % self.waypoint_total_len
+            s = (s + v_pos * self.sim_dt) % self.waypoint_total_len
             # Find segment index by binary search on cumulative arc length.
             j = int(np.searchsorted(self.waypoint_s, s, side='right')) - 1
             j = max(0, min(j, N - 1))
@@ -282,7 +292,6 @@ class MPPINode(Node):
             kap = abs(float(self.waypoint_kappa[j]))
             if max_lat > 0.0 and kap > 1e-4:
                 v_ref = min(v_ref, math.sqrt(max_lat / kap))
-            v_step = v_ref
             ref[t, 0] = self.waypoints[j, 0]
             ref[t, 1] = self.waypoints[j, 1]
             ref[t, 2] = v_ref
@@ -332,11 +341,12 @@ class MPPINode(Node):
 
         x0 = np.array([ex, ey, self.last_drive_steer, v, yaw], dtype=np.float32)
 
-        reference = self._build_reference(ex, ey)
+        reference = self._build_reference(ex, ey, v)
         obstacles = self._obstacles_for_solve()
 
         weights = np.array([
-            float(self.get_parameter('xy_weight').value),
+            float(self.get_parameter('contour_weight').value),
+            float(self.get_parameter('lag_weight').value),
             float(self.get_parameter('velocity_weight').value),
             float(self.get_parameter('yaw_weight').value),
             float(self.get_parameter('obstacle_weight').value) if self.use_detection else 0.0,
