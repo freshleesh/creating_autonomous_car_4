@@ -73,7 +73,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
     sigma      = 0.3   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
-    min_points = 12      # 클러스터링 충족하는 포인트 수 (벽 반사 단편 제거)
+    min_points = 9      # 클러스터링 충족하는 포인트 수 (벽 반사 단편 제거)
 
 
     use_adaptive = angle_inc > 1e-9
@@ -210,13 +210,12 @@ def l_shape_fitting(clusters):
 
 
 
-def tracking(obstacles, track, dt: float, ego):
+def tracking(obstacles, track, dt: float, ego, max_misses: int = 60):
     # --- tunable parameters ---
     opp_max_lat     = 5       # 좌우 트래킹 범위
-    max_misses      = 15      # 안보일때 예측 유지 프레임 수
     Q_scale         = 0.5     # 칼만필터 노이즈 공분산
     R_scale         = 0.5     # 측정 노이즈 가중치
-    assoc_threshold = 2.0     # 동일한 물체로 인식하는 거리 기준
+    assoc_threshold = 1.5     # 동일한 물체로 인식하는 거리 기준 (코너 예측 오차 대응)
     lidar_to_base_x = 0.5     # 라이다 기준 좌표 거리
 
     ex, ey, eyaw = ego
@@ -310,14 +309,15 @@ def trailing(track, ego, ego_v) -> float:
     True PD on the gap: kp on the gap error, kd on the *closing* speed.
     """
     # --- tunable parameters ---
-    base_speed   = 8.0    # [m/s] free-running race speed
-    desired_gap  = 0.6    # [m] gap to hold behind the opponent
-    detect_range  = 3.0    # [m] start reacting within this distance
-    kp            = 8.0    # P gain on the gap error
-    kd            = 3.0    # D gain on the closing speed
-    max_speed     = 8.0    # [m/s] absolute speed cap
-    full_stop      = 0.2   # [m] 이 거리 이내 → 완전 정지
-    emergency_stop = 0.5   # [m] 이 거리 이내 → 최저 속도로
+    base_speed    = 8.0   # [m/s] free-running race speed
+    desired_gap   = 1.0   # [m] PD 목표 거리
+    detect_range  = 6.0   # [m] 이 거리부터 PD 감속 시작
+    stop_gap      = 3.0   # [m] 이 거리 이내 → 완전 정지
+    kp            = 3.0   # P gain: gap 오차 1m당 속도 보정
+    kd            = 4.0   # D gain: closing speed 1m/s당 보정
+    max_speed     = 8.0   # [m/s] absolute speed cap
+    full_stop     = 0.2   # [m] 최근접 완전 정지
+    emergency_stop = 0.5  # [m] 최근접 최저 속도
 
     # 1. No opponent in view -> race at full speed.
     if track is None:
@@ -336,16 +336,27 @@ def trailing(track, ego, ego_v) -> float:
     if opp_dist < 0.0 or opp_dist > detect_range:
         return base_speed
 
-    # 4. 50cm 이내 → 최저 속도, 20cm 이내 → 완전 정지
+    # 4. stop_gap 이내 → 완전 정지
+    if opp_dist <= stop_gap:
+        return 0.0
+
+    # 5. 최근접 안전 임계값
     if opp_dist <= full_stop:
         return 0.0
     if opp_dist <= emergency_stop:
         return 0.5
 
-    # 5. Classic PD anchored at base_speed.
+    # 6. PD speed
     speed = base_speed + kp * (opp_dist - desired_gap) + kd * closing
     speed = max(0.0, min(speed, base_speed, max_speed))
-    return speed
+
+    # 7. 거리 비례 속도 상한: detect_range→stop_gap 구간에서 선형으로 0까지 감속
+    ramp = (opp_dist - stop_gap) / (detect_range - stop_gap)  # 1.0(먼) → 0.0(가까운)
+    v_ramp = base_speed * ramp
+    speed = min(speed, v_ramp)
+
+    return max(0.0, speed)
+
 
 
 
@@ -410,9 +421,6 @@ class LocalPlanning(Node):
         self.track_half_w  = float(gp('track_half_w', 0.8))     # [m] fallback half-width
         self.a_lat_max     = float(gp('a_lat_max',    6.0))     # [m/s^2] lat accel cap
         self.vx_scale_avoid = float(gp('vx_scale_avoid', 0.5))  # avoidance vx multiplier
-        # opponents whose tracked |v| exceeds this are treated as dynamic and
-        # routed to trailing only (no spline avoidance).
-        self.dyn_speed_thresh = float(gp('dyn_speed_thresh', 0.5))  # [m/s]
 
         # ---- wall clamping (per-sample clamp + PCHIP refit) -----------------
         self.clamp_to_walls = bool(gp('clamp_to_walls', True))
@@ -434,7 +442,6 @@ class LocalPlanning(Node):
 
         # ---- perception / pose state ----------------------------------------
         self.track = None
-        self.track_is_dynamic = True  # True=동적차량, False=정적장애물
         self._front_stop = False       # -10°~+10°, 15cm 이내 장애물 → 정지
         self.last_scan_t = None
         self._occ_map    = None
@@ -488,23 +495,23 @@ class LocalPlanning(Node):
         self._map_h      = info.height
 
     def _is_on_static_map(self, gx, gy, w=0.5, h=0.35, threshold=50):
-        if self._occ_map is None:
+        """중심점 3×3 셀 중 2개 이상 occupied → 벽 위 클러스터로 판정.
+
+        벽 가까이 있는 실제 장애물 오탐을 막기 위해 엄격한 조건 유지.
+        (5×5 any-occupied는 벽 0.10m 이내 실제 장애물도 걸러냄)
+        """
+        if self._map_array is None:
             return False
-        info = self._occ_map.info
-        res  = info.resolution
-        ox   = info.origin.position.x
-        oy   = info.origin.position.y
-        col = int((gx - ox) / res)
-        row = int((gy - oy) / res)
-        # 3x3 셀 중 3개 이상 occupied → 벽
+        col = int((gx - self._map_ox) / self._map_res)
+        row = int((gy - self._map_oy) / self._map_res)
         occupied = 0
         for dr in (-1, 0, 1):
             for dc in (-1, 0, 1):
                 r, c = row + dr, col + dc
-                if 0 <= r < info.height and 0 <= c < info.width:
-                    if self._occ_map.data[r * info.width + c] >= threshold:
+                if 0 <= r < self._map_h and 0 <= c < self._map_w:
+                    if self._map_array[r, c] >= threshold:
                         occupied += 1
-        return occupied >= 3
+        return occupied >= 2
 
     def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
         """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
@@ -564,7 +571,7 @@ class LocalPlanning(Node):
         self._front_stop = bool(np.any(front_mask & (ranges < 0.15)))
 
         x, y = scan_to_xy(ranges, msg.angle_min, msg.angle_increment)
-        x, y = self._remove_wall_scan_points(x, y)  # 벽 포인트 제거 후 클러스터링
+        x, y = self._remove_wall_scan_points(x, y, radius=1)  # 벽 포인트 제거 후 클러스터링
         clusters_xy = cluster(x, y, msg.angle_increment)
         obstacles = l_shape_fitting(clusters_xy)
 
@@ -593,22 +600,6 @@ class LocalPlanning(Node):
 
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
-
-        # 동적/정적 분류: closing speed 우선 → hits 기반 fallback
-        if self.track is not None:
-            _st, _P, _misses, hits = self.track
-            opp_spd = math.hypot(float(_st[2]), float(_st[3]))
-            # 자차 헤딩 방향으로 상대 속도 투영
-            c_e = math.cos(self.eyaw); s_e = math.sin(self.eyaw)
-            opp_v_fwd   = c_e * float(_st[2]) + s_e * float(_st[3])
-            closing_rate = self.ev - opp_v_fwd   # >0 = 가까워지는 중
-            # 장애물이 느리고 자차가 빠르게 접근 → 즉시 정적 판정
-            if opp_spd < self.dyn_speed_thresh and closing_rate > 1.0:
-                self.track_is_dynamic = False
-            elif hits >= 20:
-                self.track_is_dynamic = opp_spd >= self.dyn_speed_thresh
-            else:
-                self.track_is_dynamic = True
 
         # 1.5) Publish RViz Markers for Detection and Tracking
         self._publish_detection_markers(obstacles)
