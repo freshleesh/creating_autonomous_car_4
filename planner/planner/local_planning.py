@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0606
+#로컬플래닝
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -25,6 +25,8 @@ Run:
 """
 
 import math
+import os
+import yaml as _yaml
 
 import numpy as np
 from scipy.interpolate import CubicSpline, PchipInterpolator
@@ -32,6 +34,7 @@ from scipy.ndimage import binary_dilation
 
 import rclpy
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
@@ -73,8 +76,8 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
-    sigma      = 0.2   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
-    min_points = 9      # 클러스터링 충족하는 포인트 수 (벽 반사 단편 제거)
+    sigma      = 0.35  # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
+    min_points = 4      # 클러스터링 충족하는 포인트 수 (원거리 감지 대응)
 
 
     use_adaptive = angle_inc > 1e-9
@@ -136,7 +139,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
 
 def l_shape_fitting(clusters):
     # --- tunable parameters ---
-    max_obs_size = 1.5       # 장애물 길이 범위
+    max_obs_size = 2.0       # 장애물 길이 범위
     min_edge     = 0.01
     n_angles     = 90
 
@@ -157,7 +160,7 @@ def l_shape_fitting(clusters):
         cov          = np.cov(pts_centered, rowvar=False)
         try:
             eigenvalues, _ = np.linalg.eigh(cov)
-            if max(eigenvalues) / (min(eigenvalues) + 1e-6) > 80.0:
+            if max(eigenvalues) / (min(eigenvalues) + 1e-6) > 200.0:
                 continue
         except np.linalg.LinAlgError:
             continue
@@ -177,8 +180,8 @@ def l_shape_fitting(clusters):
         h_cand = b_max - b_min
 
         size_penalty = (
-            np.exp(-((w_cand - 0.45)**2) / 0.25) * np.exp(-((h_cand - 0.35)**2) / 0.25) +
-            np.exp(-((w_cand - 0.35)**2) / 0.25) * np.exp(-((h_cand - 0.45)**2) / 0.25)
+            np.exp(-((w_cand - 0.45)**2) / 0.6) * np.exp(-((h_cand - 0.35)**2) / 0.6) +
+            np.exp(-((w_cand - 0.35)**2) / 0.6) * np.exp(-((h_cand - 0.45)**2) / 0.6)
         )
         k = int(np.argmax(score * size_penalty))
 
@@ -419,6 +422,7 @@ class LocalPlanning(Node):
         self.track_half_w  = float(gp('track_half_w', 0.8))     # [m] fallback half-width
         self.a_lat_max     = float(gp('a_lat_max',    6.0))     # [m/s^2] lat accel cap
         self.vx_scale_avoid = float(gp('vx_scale_avoid', 0.7))  # avoidance vx multiplier
+        self.vx_max        = float(gp('vx_max',       99.0))    # [m/s]   전체 속도 상한
 
         # ---- wall clamping (per-sample clamp + PCHIP refit) -----------------
         self.clamp_to_walls = bool(gp('clamp_to_walls', True))
@@ -430,12 +434,25 @@ class LocalPlanning(Node):
 
 
         # ---- PNG wall mask --------------------------------------------------
-        _PNG = ('/home/maeng/creating_autonomous_car_ws/src/creating_autonomous_car'
-                '/stack_master/maps/h_0602/h_0602.png')
-        self._wall_png  = str(gp('map_png', _PNG))
-        self._wall_res  = float(gp('map_res',  0.050))
-        self._wall_ox   = float(gp('map_ox',  -25.902))
-        self._wall_oy   = float(gp('map_oy',  -17.107))
+        _map_name = str(gp('map_name', ''))
+        _default_png = ''
+        _default_res, _default_ox, _default_oy = 0.050, 0.0, 0.0
+        if _map_name:
+            try:
+                _pkg = get_package_share_directory('stack_master')
+                _map_yaml_path = os.path.join(_pkg, 'maps', _map_name, f'{_map_name}.yaml')
+                with open(_map_yaml_path) as _f:
+                    _mi = _yaml.safe_load(_f)
+                _default_res = float(_mi.get('resolution', 0.050))
+                _default_ox  = float(_mi['origin'][0])
+                _default_oy  = float(_mi['origin'][1])
+                _default_png = os.path.join(_pkg, 'maps', _map_name, f'{_map_name}.png')
+            except Exception as _e:
+                self.get_logger().warn(f'PNG wall mask load failed: {_e}')
+        self._wall_png  = str(gp('map_png', _default_png))
+        self._wall_res  = float(gp('map_res', _default_res))
+        self._wall_ox   = float(gp('map_ox',  _default_ox))
+        self._wall_oy   = float(gp('map_oy',  _default_oy))
         self._wall_mask       = None   # 10cm — 장애물 입력 필터
         self._wall_mask_large = None   # 20cm — track 즉시 소멸
         self._wall_mask_xl    = None   # 30cm — 저속 정적 반사 소멸 (돌출벽 대응)
@@ -469,6 +486,7 @@ class LocalPlanning(Node):
         self.ex = self.ey = self.eyaw = 0.0
         self.ev = 0.0
         self.have_pose = False
+        self._yaw_rate  = 0.0   # [rad/s] odom angular.z 직접 사용
         self.ego_s = 0.0
         self.ego_d = 0.0
 
@@ -487,10 +505,15 @@ class LocalPlanning(Node):
         self.create_subscription(OccupancyGrid, '/map',           self._map_cb, latched)
 
         self.local_pub  = self.create_publisher(WpntArray,   self.local_topic, latched)
-        self.marker_pub = self.create_publisher(MarkerArray, '/local_waypoints/markers', 10)
+        self.viz_pub    = self.create_publisher(MarkerArray, '/local_planning/viz', 10)
         self.cand_pub   = self.create_publisher(MarkerArray, '/local_planning/candidates', 5)
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
-        self.trk_pub    = self.create_publisher(MarkerArray, '/local_planning/tracking', 5)
+
+        # 트리거 콘: 전방 BOX_LEN m, 총 45도 (±22.5°)
+        # 차량 heading(eyaw)에 따라 자동으로 회전 — 코너링 시 자연스럽게 따라감
+        self._BOX_LEN        = 5.0              # [m] 콘 반경
+        self._CONE_HALF_DEG  = 17.0             # [deg] 콘 반각 (총 34°)
+        self._MIN_HITS       = 3                # avoidance 발동 최소 연속 감지 횟수
 
         self.get_logger().info(
             f'local_planning up | mode={self.mode} | horizon={self.local_horizon} m | '
@@ -551,8 +574,8 @@ class LocalPlanning(Node):
         self._map_h      = info.height
 
     def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
-        """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
-        if self._map_array is None:
+        """OccupancyGrid + PNG 벽 마스크로 벽 스캔 포인트를 NaN 처리."""
+        if self._map_array is None and self._wall_mask is None:
             return x, y
         lidar_to_base_x = 0.27
         cyaw = math.cos(self.eyaw)
@@ -562,15 +585,30 @@ class LocalPlanning(Node):
         by = np.where(valid, y, 0.0)
         gx = self.ex + cyaw * bx - syaw * by
         gy = self.ey + syaw * bx + cyaw * by
-        cols = ((gx - self._map_ox) / self._map_res).astype(int)
-        rows = ((gy - self._map_oy) / self._map_res).astype(int)
-        in_bounds = valid & (cols >= 0) & (cols < self._map_w) & (rows >= 0) & (rows < self._map_h)
+
         on_wall = np.zeros(len(x), dtype=bool)
-        for dr in range(-radius, radius + 1):
-            for dc in range(-radius, radius + 1):
-                r2 = np.clip(rows + dr, 0, self._map_h - 1)
-                c2 = np.clip(cols + dc, 0, self._map_w - 1)
-                on_wall |= in_bounds & (self._map_array[r2, c2] >= threshold)
+
+        # OccupancyGrid 기반 필터
+        if self._map_array is not None:
+            cols = ((gx - self._map_ox) / self._map_res).astype(int)
+            rows = ((gy - self._map_oy) / self._map_res).astype(int)
+            in_bounds = valid & (cols >= 0) & (cols < self._map_w) & (rows >= 0) & (rows < self._map_h)
+            for dr in range(-radius, radius + 1):
+                for dc in range(-radius, radius + 1):
+                    r2 = np.clip(rows + dr, 0, self._map_h - 1)
+                    c2 = np.clip(cols + dc, 0, self._map_w - 1)
+                    on_wall |= in_bounds & (self._map_array[r2, c2] >= threshold)
+
+        # PNG 마스크 기반 필터 (20cm 마진 — 실제 차 벽 반사 제거)
+        mask_png = self._wall_mask_large if self._wall_mask_large is not None else self._wall_mask
+        if mask_png is not None:
+            cols_p = ((gx - self._wall_ox) / self._wall_res).astype(int)
+            rows_p = (self._wall_h - 1 - (gy - self._wall_oy) / self._wall_res).astype(int)
+            in_bounds_p = valid & (cols_p >= 0) & (cols_p < self._wall_w) & (rows_p >= 0) & (rows_p < self._wall_h)
+            rc = np.clip(rows_p, 0, self._wall_h - 1)
+            cc = np.clip(cols_p, 0, self._wall_w - 1)
+            on_wall |= in_bounds_p & mask_png[rc, cc]
+
         x = x.copy()
         y = y.copy()
         x[on_wall] = float('nan')
@@ -585,7 +623,8 @@ class LocalPlanning(Node):
         q = msg.pose.pose.orientation
         self.ex, self.ey = p.x, p.y
         self.eyaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
-        self.ev   = msg.twist.twist.linear.x
+        self.ev = msg.twist.twist.linear.x
+        self._yaw_rate = msg.twist.twist.angular.z  # 바퀴 방향 추정용 yaw rate
         self.have_pose = True
 
     def _scan_cb(self, msg):
@@ -654,9 +693,8 @@ class LocalPlanning(Node):
                 if speed < 1.0:  # 30cm 이내 + 저속 → 돌출벽 정적 반사
                     self.track = None
 
-        # 1.5) Publish RViz Markers for Detection and Tracking
+        # 1.5) Detection 마커 (별도 토픽 유지)
         self._publish_detection_markers(obstacles)
-        self._publish_tracking_markers()
 
         # 2) ego frenet
         self.ego_s, self.ego_d = self.to_frenet(self.ex, self.ey)
@@ -673,7 +711,9 @@ class LocalPlanning(Node):
             out, used_mode = self._build_passthrough(), 'free'
 
         self.local_pub.publish(out)
-        self._publish_local_markers(out, used_mode)
+
+        # 통합 마커: trigger_zone + tracking + local_waypoints 한 번에 발행
+        self._publish_viz(out, used_mode)
 
     def _publish_detection_markers(self, obstacles):
         ma = MarkerArray()
@@ -709,60 +749,93 @@ class LocalPlanning(Node):
 
         self.det_pub.publish(ma)
 
-    def _publish_tracking_markers(self):
-        ma = MarkerArray()
-        clear = Marker()
-        clear.action = Marker.DELETEALL
-        ma.markers.append(clear)
+    def _tracking_markers(self) -> list:
+        markers = []
+        if self.track is None or not self._is_in_trigger_box():
+            return markers
+        state, P, misses, hits = self.track
+        gx, gy, vx, vy = state
+        stamp = self.get_clock().now().to_msg()
+        m = Marker()
+        m.header.frame_id = 'map'; m.header.stamp = stamp
+        m.ns = 'tracking_pos'; m.id = 100
+        m.type = Marker.CYLINDER; m.action = Marker.ADD
+        m.pose.position.x = float(gx); m.pose.position.y = float(gy); m.pose.position.z = 0.2
+        m.pose.orientation.w = 1.0
+        m.scale.x = m.scale.y = m.scale.z = 0.5
+        m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 0.8
+        markers.append(m)
+        speed = math.hypot(vx, vy)
+        if speed > 0.02:
+            arrow_len = max(speed * 3.0, 0.5)
+            nx = vx / speed; ny = vy / speed
+            arr = Marker()
+            arr.header.frame_id = 'map'; arr.header.stamp = stamp
+            arr.ns = 'tracking_vel'; arr.id = 101
+            arr.type = Marker.ARROW; arr.action = Marker.ADD
+            p1 = Point(); p1.x, p1.y, p1.z = float(gx), float(gy), 0.3
+            p2 = Point(); p2.x = float(gx + nx * arrow_len); p2.y = float(gy + ny * arrow_len); p2.z = 0.3
+            arr.points = [p1, p2]
+            arr.scale.x = 0.08; arr.scale.y = 0.20; arr.scale.z = 0.0
+            arr.color.r, arr.color.g, arr.color.b, arr.color.a = 1.0, 0.4, 0.7, 1.0
+            markers.append(arr)
+        return markers
 
-        if self.track is not None:
-            state, P, misses, hits = self.track
-            gx, gy, vx, vy = state
-            stamp = self.get_clock().now().to_msg()
+    def _cone_half_deg(self) -> float:
+        return self._CONE_HALF_DEG
 
-            m = Marker()
-            m.header.frame_id = 'map'
-            m.header.stamp = stamp
-            m.ns = 'tracking_pos'
-            m.id = 0
-            m.type = Marker.CYLINDER
-            m.action = Marker.ADD
-            m.pose.position.x = float(gx)
-            m.pose.position.y = float(gy)
-            m.pose.position.z = 0.2
-            m.pose.orientation.w = 1.0
-            m.scale.x = 0.5
-            m.scale.y = 0.5
-            m.scale.z = 0.5
-            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 0.8
-            ma.markers.append(m)
+    def _cone_yaw(self) -> float:
+        """콘 방향: 레이스라인 2m 앞 지점의 heading 사용.
+        코너 진입 전에 미리 돌아가서 화끈하게 예측."""
+        if self._sx is not None and self.s_total > 0.0:
+            psi, _ = self._psi_kappa_at(self.ego_s + 0.7)
+            return psi
+        return self.eyaw
 
-            speed = math.hypot(vx, vy)
-            if speed > 0.02:
-                # 방향 벡터를 고정 길이(1.0m)로 정규화해서 항상 명확하게 표시
-                arrow_len = max(speed * 3.0, 0.5)  # 최소 0.5m, 속도 3배 스케일
-                nx = vx / speed; ny = vy / speed
-                arr = Marker()
-                arr.header.frame_id = 'map'
-                arr.header.stamp = stamp
-                arr.ns = 'tracking_vel'
-                arr.id = 1
-                arr.type = Marker.ARROW
-                arr.action = Marker.ADD
-                p1 = Point()
-                p1.x, p1.y, p1.z = float(gx), float(gy), 0.3
-                p2 = Point()
-                p2.x = float(gx + nx * arrow_len)
-                p2.y = float(gy + ny * arrow_len)
-                p2.z = 0.3
-                arr.points = [p1, p2]
-                arr.scale.x = 0.08   # shaft 굵기
-                arr.scale.y = 0.20   # head 크기
-                arr.scale.z = 0.0
-                arr.color.r, arr.color.g, arr.color.b, arr.color.a = 1.0, 0.4, 0.7, 1.0
-                ma.markers.append(arr)
+    def _is_in_trigger_box(self) -> bool:
+        """현재 track 위치가 전방 콘(반각 CONE_HALF_DEG, 반경 BOX_LEN) 안이면 True.
+        콘 방향은 레이스라인 2m 앞 heading 기준."""
+        if self.track is None:
+            return False
+        cone_yaw = self._cone_yaw()
+        ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        cyaw = math.cos(cone_yaw)
+        syaw = math.sin(cone_yaw)
+        fwd = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
+        lat = -syaw * (ox - self.ex) + cyaw * (oy - self.ey)
+        if fwd <= 0.0 or fwd > self._BOX_LEN:
+            return False
+        lat_limit = fwd * math.tan(math.radians(self._cone_half_deg()))
+        return abs(lat) <= lat_limit
 
-        self.trk_pub.publish(ma)
+    def _trigger_zone_markers(self) -> list:
+        """트리거 존 TRIANGLE_LIST 마커 반환. avoidance → 빨간색, free → 연두색."""
+        m = Marker()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'trigger_zone'; m.id = 200
+        m.type = Marker.TRIANGLE_LIST; m.action = Marker.ADD
+        m.pose.orientation.w = 1.0
+        m.scale.x = m.scale.y = m.scale.z = 1.0
+        if self._avoid_state is not None:
+            m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 0.0, 0.40
+        else:
+            m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 1.0, 0.2, 0.25
+        cone_yaw = self._cone_yaw()
+        N = 24
+        half_rad = math.radians(self._cone_half_deg())
+        R = self._BOX_LEN
+        near_half = 0.4
+        sc = math.cos(cone_yaw); ss = math.sin(cone_yaw)
+        for i in range(N):
+            t1 = i / N; t2 = (i + 1) / N
+            pn1 = Point(); pn1.x = self.ex + (near_half - 2.0*near_half*t1)*ss; pn1.y = self.ey - (near_half - 2.0*near_half*t1)*sc; pn1.z = 0.05
+            pn2 = Point(); pn2.x = self.ex + (near_half - 2.0*near_half*t2)*ss; pn2.y = self.ey - (near_half - 2.0*near_half*t2)*sc; pn2.z = 0.05
+            a1 = cone_yaw - half_rad + 2.0*half_rad*t1; a2 = cone_yaw - half_rad + 2.0*half_rad*t2
+            pf1 = Point(); pf1.x = self.ex + R*math.cos(a1); pf1.y = self.ey + R*math.sin(a1); pf1.z = 0.05
+            pf2 = Point(); pf2.x = self.ex + R*math.cos(a2); pf2.y = self.ey + R*math.sin(a2); pf2.z = 0.05
+            m.points += [pn1, pf1, pf2, pn1, pf2, pn2]
+        return [m]
 
     # ================================================================== #
     # Frenet spline
@@ -930,6 +1003,7 @@ class LocalPlanning(Node):
             vx = np.minimum(vx, v_curv)
         if vx_scale != 1.0:
             vx = vx * float(vx_scale)
+        vx = np.minimum(vx, self.vx_max)   # 전체 속도 상한
         if self._front_stop:
             vx = np.zeros_like(vx)
 
@@ -1005,14 +1079,20 @@ class LocalPlanning(Node):
         if self.track is None:
             return self._build_passthrough(), 'free'
 
+        # hits 부족 → 아직 충분히 감지되지 않은 물체 (유령 감지 방지)
+        _, _, _, hits = self.track
+        if hits < self._MIN_HITS:
+            return self._build_passthrough(), 'free'
+
         # 3. 전방 거리 계산
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
         cyaw = math.cos(self.eyaw)
         syaw = math.sin(self.eyaw)
         fwd_dist = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
+        lat_dist = -syaw * (ox - self.ex) + cyaw * (oy - self.ey)
 
-        # 장애물이 뒤에 있거나 trigger_range 초과 → free
-        if fwd_dist <= 0.0 or fwd_dist > self.trigger_range:
+        # 콘 트리거 밖이면 → free
+        if not self._is_in_trigger_box():
             return self._build_passthrough(), 'free'
 
         # 4. Frenet 장애물 위치
@@ -1150,32 +1230,35 @@ class LocalPlanning(Node):
     # ================================================================== #
     # Visualization
     # ================================================================== #
-    def _publish_local_markers(self, wpnts, mode):
+    def _local_wp_markers(self, wpnts, mode) -> list:
         if mode == 'spline_avoid':
-            color, width = (1.0, 0.0, 0.0), 0.12   # 빨간색 / 굵게
+            color, width = (1.0, 0.0, 0.0), 0.12
         elif mode == 'trailing':
-            color, width = (1.0, 1.0, 0.0), 0.08   # 노란색
+            color, width = (1.0, 1.0, 0.0), 0.08
         else:
-            color, width = (0.2, 1.0, 0.2), 0.08   # 연두색
-        ma = MarkerArray()
+            color, width = (0.2, 1.0, 0.2), 0.08
         line = Marker()
         line.header.frame_id = 'map'
         line.header.stamp = self.get_clock().now().to_msg()
-        line.ns = 'local_waypoints_line'
-        line.id = 0
-        line.type = Marker.LINE_STRIP
-        line.action = Marker.ADD
+        line.ns = 'local_waypoints_line'; line.id = 300
+        line.type = Marker.LINE_STRIP; line.action = Marker.ADD
         line.pose.orientation.w = 1.0
         line.scale.x = width
         line.color.r, line.color.g, line.color.b, line.color.a = (*color, 1.0)
-        # z above candidate (0.07) and global raceline so the local path
-        # always draws on top in RViz.
         for w in wpnts.wpnts:
-            p = Point()
-            p.x, p.y, p.z = float(w.x_m), float(w.y_m), 0.20
+            p = Point(); p.x, p.y, p.z = float(w.x_m), float(w.y_m), 0.20
             line.points.append(p)
-        ma.markers.append(line)
-        self.marker_pub.publish(ma)
+        return [line]
+
+    def _publish_viz(self, wpnts, mode):
+        """trigger_zone + tracking + local_waypoints 를 하나의 MarkerArray로 발행."""
+        ma = MarkerArray()
+        clear = Marker(); clear.action = Marker.DELETEALL
+        ma.markers.append(clear)
+        ma.markers += self._trigger_zone_markers()
+        ma.markers += self._tracking_markers()
+        ma.markers += self._local_wp_markers(wpnts, mode)
+        self.viz_pub.publish(ma)
 
     def _clear_candidates(self):
         """Publish DELETEALL to wipe leftover candidate markers."""
