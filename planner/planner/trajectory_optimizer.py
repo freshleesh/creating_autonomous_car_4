@@ -27,6 +27,11 @@ class TrajectoryOptimizer(Node):
         self.declare_parameter('a_lat_max',     6.0)    # [m/s^2] lateral grip limit
         self.declare_parameter('a_long_max',    4.0)    # [m/s^2] longitudinal accel limit
         self.declare_parameter('target_ds',     0.25)   # [m]   uniform ds for QP input/output
+        # [user] High-speed early-braking: where the planned straight speed is high,
+        #   lower a_brake so deceleration into the next corner starts EARLIER.
+        self.declare_parameter('brake_hi_factor', 0.80)  # a_brake multiplier at high speed (1.0=off, lower=brake earlier)
+        self.declare_parameter('brake_hi_v_lo',   0.85)  # ×v_max: reduction starts ramping above this planned speed
+        self.declare_parameter('brake_hi_v_hi',   1.10)  # ×v_max: full reduction at/above this planned speed
 
         map_name      = self.get_parameter('map_name').value
         input_csv     = self.get_parameter('input_csv').value
@@ -40,6 +45,9 @@ class TrajectoryOptimizer(Node):
         a_lat_max     = self.get_parameter('a_lat_max').value
         a_long_max    = self.get_parameter('a_long_max').value
         target_ds     = self.get_parameter('target_ds').value
+        brake_hi_factor = self.get_parameter('brake_hi_factor').value
+        brake_hi_v_lo   = self.get_parameter('brake_hi_v_lo').value
+        brake_hi_v_hi   = self.get_parameter('brake_hi_v_hi').value
 
         if not map_name:
             self.get_logger().error('[TrajectoryOptimizer] map_name parameter is required!')
@@ -74,6 +82,9 @@ class TrajectoryOptimizer(Node):
             a_lat_max=a_lat_max,
             a_long_max=a_long_max,
             target_ds=target_ds,
+            brake_hi_factor=brake_hi_factor,
+            brake_hi_v_lo=brake_hi_v_lo,
+            brake_hi_v_hi=brake_hi_v_hi,
         )
 
         self._save_global_waypoints(out_path, x_opt, y_opt, w_r_new, w_l_new, psi, kappa, vx)
@@ -89,7 +100,8 @@ class TrajectoryOptimizer(Node):
     @staticmethod
     def _optimize(x_c, y_c, w_r, w_l,
                   safety_margin, margin_inner, margin_outer,
-                  v_max, a_lat_max, a_long_max, target_ds):
+                  v_max, a_lat_max, a_long_max, target_ds,
+                  brake_hi_factor=1.0, brake_hi_v_lo=0.85, brake_hi_v_hi=1.10):
         """
         Minimum-curvature trajectory optimization.
 
@@ -574,14 +586,14 @@ class TrajectoryOptimizer(Node):
         #       remaining stair-steps so the throttle/brake commands flow
         #       smoothly through the corner.
         v_top      = v_max
-        a_accel    = 1.90 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
-        a_brake    = 0.90 * a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
+        a_accel    = 2.80 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
+        a_brake    = 0.70* a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
                                                 #   but physical: braking-zone length = Δv²/(2·a_brake), so a
                                                 #   LOWER a_brake stretches the slow-down EARLIER. The car
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.1                       # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.2                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 
@@ -605,7 +617,7 @@ class TrajectoryOptimizer(Node):
         # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
         # no longer re-caps corner speed; the trajectory profile IS the limit now.
         cap_mild   = 1.50       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
-        cap_sharp  = 1.45       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
+        cap_sharp  = 1.40       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
@@ -644,6 +656,23 @@ class TrajectoryOptimizer(Node):
         # Initialize vx as the min of (boosted v_top) and (corner cap)
         vx = np.minimum(v_top_local, vx_cap)
 
+        # [user] High-speed early-braking. On long straights the planned speed
+        #   climbs high; with a CONSTANT a_brake the braking zone (length
+        #   ∝ Δv²/a_brake) starts too late and the car can't shed the speed
+        #   before the corner. Where the planned speed v_ref is high we REDUCE
+        #   a_brake → longer braking zone → deceleration begins EARLIER. Linear
+        #   ramp: no change below brake_hi_v_lo·v_max, full brake_hi_factor at/
+        #   above brake_hi_v_hi·v_max. brake_hi_factor=1.0 disables this entirely.
+        #   v_ref is the PRE-braking cap (straight/corner speed), so the per-point
+        #   a_brake is fixed before propagation and stays stable across passes.
+        #   NOTE: this only bites in actual braking zones — on an open straight the
+        #   downstream point is also fast, so v_cap stays high and nothing slows.
+        v_ref  = vx.copy()
+        _v_lo  = brake_hi_v_lo * v_max
+        _v_hi  = max(brake_hi_v_hi * v_max, _v_lo + 1e-6)
+        _t_fast = np.clip((v_ref - _v_lo) / (_v_hi - _v_lo), 0.0, 1.0)
+        a_brake_arr = a_brake * (1.0 - (1.0 - brake_hi_factor) * _t_fast)
+
         # (2) Backward pass: pre-corner braking. Fewer passes than before so
         # the deceleration stays in a tighter window before the apex — the
         # car holds straight-line speed longer, then brakes a bit more
@@ -652,7 +681,7 @@ class TrajectoryOptimizer(Node):
         for _ in range(7):
             for i in range(N_pts):
                 j = (i - 1) % N_pts
-                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake * ds[j])
+                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake_arr[j] * ds[j])
                 vx[j] = min(vx[j], v_cap)
 
         # (3) Post-corner hold: each point inherits the minimum of the
@@ -706,7 +735,7 @@ class TrajectoryOptimizer(Node):
         for _ in range(3):
             for j in range(N_pts - 1, -1, -1):
                 i = (j + 1) % N_pts
-                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake * ds[j])
+                v_cap = np.sqrt(vx[i] ** 2 + 2.0 * a_brake_arr[j] * ds[j])
                 if vx[j] > v_cap:
                     vx[j] = v_cap
 

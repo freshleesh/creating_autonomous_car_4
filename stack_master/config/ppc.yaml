@@ -7,7 +7,9 @@
     pp_speed_boost:    1.0     # PP straight boost OFF — straight speed managed only in trajectory (v_max)
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
-    pp_v_max_boost:    9.0     # safety ceiling = v_max (PP boost off, so this just caps at 9, never boosts)
+    pp_v_max_boost:    11.5    # [user] raised 9.0→11.5: profile now plans up to ~10.5 m/s on long straights
+                               #   (v_max=9.5 × boost_max=1.35). 9.0 was clipping it. Ceiling = a touch above
+                               #   the planned max so PP follows the profile instead of capping it.
 
     # [v8] CALM tuning. Priority is now STABILITY over tracking accuracy: the car
     #   was darting off the line at speed and then OSCILLATING trying to recover.
@@ -52,8 +54,17 @@
     #   when the car genuinely understeers. So treat as experimental: if the car
     #   starts cutting corners or twitching, set this back to 0.0. The heading
     #   feedback above already gives most of the anticipation more safely.
-    pp_us_ff_gain:     0.0     # [v9.1] turned OFF: it was the instability source at higher corner
-                               #   speed/understeer (spun in sim). Heading feedback handles anticipation.
+    pp_us_ff_gain:     0.0   # [user] 안쪽 보정 약하게 ON: delta += gain * v^2 * kappa.
+                               #   고속+급커브일수록 안쪽으로 더 조향(언더스티어 상쇄). 진동/코너컷 생기면
+                               #   0.008 → 0.0 로 낮출 것. (이전엔 0.0=OFF, 고속코너 불안정 원인이었음)
+    # [user] Corner-ENTRY 안쪽 보정. 곡률이 "갑자기" 커지는 진입 구간에서만 작동
+    #   (빠른 직선 → 코너). 관성 언더스티어로 바깥으로 튕기는 그 지점에만 미세 안쪽 조향.
+    #   정상 코너 중/탈출에는 0 (us_ff와 달리 정상 코너를 안 건드림).
+    pp_entry_ff_gain:       0.02   # 0.0=OFF. 안쪽 보정 게인. 더 넣으려면 0.04~0.06, 코너컷/진동이면 낮춤
+    pp_entry_ff_preview_n:  10     # 몇 웨이포인트 앞 곡률로 "급증"을 판정 (진입 거리)
+    pp_entry_ff_dkappa_min: 0.15   # [1/m] 이만큼 |κ|가 올라야 "갑자기 심해짐"으로 간주 (작을수록 민감)
+    pp_entry_ff_v_min:      3.0    # [m/s] 이 속도 이상에서만 작동 (느리면 언더스티어 없음)
+    pp_entry_ff_max:        0.50   # [rad] 추가 안쪽 조향 상한 (~3°). "미세하게" 유지
     pp_Kd_cte:         0.0    # 진동 시 dcte/dt도 진동 → 증폭 방지
 
     # [v6] Target-heading feedback. PP geometry already aims at target_idx, so this

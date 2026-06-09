@@ -36,6 +36,18 @@ PARAMS = {
     # [v7] Anticipation: blend curvature at a point this many waypoints ahead
     #   into the understeer FF, so the wheel leads the corner slightly.
     'pp_us_ff_preview_n': 8,
+    # [user] Corner-ENTRY inward feedforward. Unlike pp_us_ff_gain (which adds
+    #   v^2*kappa on EVERY corner and destabilises steady turns), this fires ONLY
+    #   where curvature SUDDENLY rises ahead — a fast straight running into a
+    #   corner, exactly where inertia makes the car push wide / understeer out.
+    #   Trigger = (|kappa_ahead| - |kappa_near|) > dkappa_min. Adds a small inward
+    #   steer ∝ gain*v*Δkappa toward the upcoming corner, clamped tiny, only above
+    #   v_min. Fades to 0 mid-corner (Δκ→0) and at exit (Δκ<0). 0.0 = OFF.
+    'pp_entry_ff_gain':       0.0,   # inward-steer gain. raise to ~0.02–0.06 to enable
+    'pp_entry_ff_preview_n':  10,    # waypoints ahead to measure the curvature jump (entry distance)
+    'pp_entry_ff_dkappa_min': 0.15,  # [1/m] min |kappa| rise over the preview to count as "sudden"
+    'pp_entry_ff_v_min':      3.0,   # [m/s] only active above this speed (inertia matters when fast)
+    'pp_entry_ff_max':        0.05,  # [rad] hard clamp on the added inward steer (~3°), keeps it subtle
     # CTE-adaptive lookahead shrink
     'pp_cte_gain':        2.0,
     # Direct error feedback
@@ -111,6 +123,11 @@ class PPNode(Node):
         self.ff_gain        = p('pp_ff_gain')
         self.us_ff_gain     = p('pp_us_ff_gain')
         self.us_ff_preview_n = int(p('pp_us_ff_preview_n'))
+        self.entry_ff_gain       = p('pp_entry_ff_gain')
+        self.entry_ff_preview_n  = int(p('pp_entry_ff_preview_n'))
+        self.entry_ff_dkappa_min = p('pp_entry_ff_dkappa_min')
+        self.entry_ff_v_min      = p('pp_entry_ff_v_min')
+        self.entry_ff_max        = p('pp_entry_ff_max')
         self.cte_gain       = p('pp_cte_gain')
         self.Kp_cte         = p('pp_Kp_cte')
         self.K_heading      = p('pp_K_heading')
@@ -306,6 +323,24 @@ class PPNode(Node):
             )
             kappa_ff = 0.5 * kappa_near + 0.5 * kappa_prev   # blend current + preview
             delta += self.us_ff_gain * (v * v) * kappa_ff
+
+        # [user] Corner-ENTRY inward feedforward. Only where curvature SUDDENLY
+        #   rises ahead (fast straight → corner): the car carries inertia and
+        #   understeers wide right at the entry. Add a small inward nudge toward
+        #   the upcoming corner, ∝ how fast we are × how abruptly κ jumps. Fades
+        #   to 0 mid-corner (Δκ→0) and at exit (Δκ<0), so it never fights a steady
+        #   turn. Clamped tiny here and smoothed by the steer-rate limiter below.
+        if self.entry_ff_gain > 0.0 and v > self.entry_ff_v_min:
+            k_ahead = float(
+                self.waypoints[(nearest_idx + self.entry_ff_preview_n) % N].kappa_radpm
+            )
+            dkappa = abs(k_ahead) - abs(kappa_near)          # >0 → curvature rising ahead
+            if dkappa > self.entry_ff_dkappa_min:
+                inward = (self.entry_ff_gain * v
+                          * (dkappa - self.entry_ff_dkappa_min)
+                          * math.copysign(1.0, k_ahead))     # toward the upcoming corner
+                inward = max(-self.entry_ff_max, min(self.entry_ff_max, inward))
+                delta += inward
 
         # Heading + CTE direct feedback
         # [v6 수정] nearest_idx → target_idx 로 통일
