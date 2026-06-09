@@ -529,6 +529,10 @@ class LocalPlanning(Node):
         _wall_mask_large (20cm) : track 즉시 소멸
         _wall_mask_xl    (30cm) : 저속 정적 반사 소멸 — 돌출벽 대응
         """
+        if not self._wall_png or not os.path.isfile(self._wall_png):
+            self.get_logger().warn(
+                f'wall mask: PNG 경로 없음/누락 (map_name 미지정?) ({self._wall_png!r}) — 벽 마스크 비활성화')
+            return
         try:
             from PIL import Image
             img = Image.open(self._wall_png).convert('L')

@@ -20,21 +20,21 @@ mppi:
     # Reference picking from /global_waypoints
     use_waypoint_speed:  true
     ref_speed:           2.0
-    ref_speed_scale:     10.0
+    ref_speed_scale:     1.0
     # Reference points are spaced by the car's ACTUAL speed (floored), not the
     # speed target — so they don't get thrown ahead around corners (cut-in fix).
     ref_pos_speed_floor: 1.0   # m/s
     # Single grip knob: cap corner speed so v^2*|kappa| <= max_lat_accel.
     # Lower if the car slides in corners; 0 disables. (dry grip ~ mu*g ~ 10.3)
-    max_lat_accel:       7.0   # m/s^2
+    max_lat_accel:       4.0   # m/s^2
 
     # Cost weights — xy error split into path-frame contour/lag (see _step_reward).
     # contour = off-line (perpendicular) error: keep HIGH → stays on the line.
     # lag = along-path error: keep LOW → progress without corner-cutting.
-    contour_weight:      2.0
+    contour_weight:      1.5
     lag_weight:          0.3
-    velocity_weight:     2.0
-    yaw_weight:          0.2
+    velocity_weight:     0.5
+    yaw_weight:          0.5
 
     # MPPI hyperparameters
     temperature:         0.08

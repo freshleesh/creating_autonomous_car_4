@@ -45,11 +45,11 @@
           `mode` and `odom_topic` are passed via -p to override the YAML so
           they can still be flipped from the command line at launch time. -->
   <group if="$(var sim)">
-    <executable cmd="/usr/bin/python3 $(var planner_path) --ros-args --params-file $(var planner_config) -p mode:=$(var mode) -p odom_topic:=/vesc/odom"
+    <executable cmd="/usr/bin/python3 $(var planner_path) --ros-args --params-file $(var planner_config) -p mode:=$(var mode) -p map_name:=$(var map) -p odom_topic:=/vesc/odom"
                 output="screen"/>
   </group>
   <group unless="$(var sim)">
-    <executable cmd="/usr/bin/python3 $(var planner_path) --ros-args --params-file $(var planner_config) -p mode:=$(var mode) -p odom_topic:=/car_state/odom"
+    <executable cmd="/usr/bin/python3 $(var planner_path) --ros-args --params-file $(var planner_config) -p mode:=$(var mode) -p map_name:=$(var map) -p odom_topic:=/car_state/odom"
                 output="screen"/>
   </group>
 
