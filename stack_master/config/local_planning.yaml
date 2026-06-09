@@ -20,11 +20,11 @@ local_planning:
 
     # ---- spline_avoid: avoidance geometry ----------------------------------
     d_safe:        0.40    # [m]  peak lateral offset — 장애물 40cm 회피 (25cm 최소 보장)
-    s_in:          1.0     # [m]  min approach gap; closer than this -> free
+    s_in:          0.3     # [m]  min approach gap; closer than this -> free
     s_out:         1.5     # [m]  distance from peak back to raceline rejoin
-    trigger_range: 4.0     # [m]  start considering avoidance within this gap
-    margin:        0.20    # [m]  벽 최소 이격 20cm (evaluate_state 기준)
-    obs_radius:    0.05    # [m]  safety = obs_radius + margin = 0.25m (장애물 25cm)
+    trigger_range: 8.0     # [m]  start considering avoidance within this gap
+    margin:        0.05    # [m]  evaluate 기준 (실질 벽 마진은 PNG 15cm가 담당)
+    obs_radius:    0.05    # [m]  safety = 0.10m (lenient — 미드포인트가 실질 이격 보장)
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
 
     # ---- spline_avoid: speed limits ----------------------------------------
@@ -34,5 +34,5 @@ local_planning:
     # ---- spline_avoid: wall clamping (forces wall feasibility) -------------
     clamp_to_walls:  true   # [bool] enable clamp + PCHIP smoothing
     clamp_buffer:    0.05   # [m]    inset = margin + clamp_buffer = 0.25m
-    s_hold:          0.5    # [m]    이 거리까지 현재 경로 유지 후 회피 시작
+    s_hold:          1.0    # [m]    이 거리까지 현재 경로 유지 후 회피 시작
 

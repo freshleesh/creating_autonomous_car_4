@@ -437,7 +437,6 @@ class LocalPlanning(Node):
         self._wall_ox   = float(gp('map_ox',  -25.902))
         self._wall_oy   = float(gp('map_oy',  -17.107))
         self._wall_mask       = None   # 10cm — 장애물 입력 필터
-        self._wall_mask_med   = None   # 15cm — 회피경로 벽 체크
         self._wall_mask_large = None   # 20cm — track 즉시 소멸
         self._wall_mask_xl    = None   # 30cm — 저속 정적 반사 소멸 (돌출벽 대응)
         self._wall_h    = 0
@@ -519,17 +518,15 @@ class LocalPlanning(Node):
             return
         wall = arr < 90
         n_sm = max(1, int(math.ceil(0.10 / self._wall_res)))
-        n_md = max(1, int(math.ceil(0.15 / self._wall_res)))
         n_lg = max(1, int(math.ceil(0.20 / self._wall_res)))
         n_xl = max(1, int(math.ceil(0.30 / self._wall_res)))
         self._wall_mask       = binary_dilation(wall, structure=np.ones((2*n_sm+1, 2*n_sm+1), dtype=bool))
-        self._wall_mask_med   = binary_dilation(wall, structure=np.ones((2*n_md+1, 2*n_md+1), dtype=bool))
         self._wall_mask_large = binary_dilation(wall, structure=np.ones((2*n_lg+1, 2*n_lg+1), dtype=bool))
         self._wall_mask_xl    = binary_dilation(wall, structure=np.ones((2*n_xl+1, 2*n_xl+1), dtype=bool))
         self._wall_h, self._wall_w = arr.shape
         self.get_logger().info(
             f'wall mask ready: {self._wall_h}×{self._wall_w} px '
-            f'(10cm / 15cm / 20cm / 30cm)')
+            f'(10cm / 20cm / 30cm)')
 
     def _is_on_wall_png(self, gx: float, gy: float) -> bool:
         """글로벌 좌표 (gx, gy)가 PNG 벽 마스크 위이면 True."""
@@ -989,47 +986,48 @@ class LocalPlanning(Node):
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
-        """4m 이내 장애물 감지 시 장애물↔벽 중간점으로 회피, 불가능하면 free 폴백."""
+        """4m 이내 장애물 감지 시 좌/우 스플라인 회피, 불가능하면 trailing 폴백."""
+        ego = (self.ex, self.ey, self.eyaw)
+
         # 1. 커밋된 회피 경로 진행 중
         if self._avoid_state is not None:
             st = self._avoid_state
             delta_ego = (self.ego_s - st['ego_s_init']) % self.s_total
             delta_sd  = st['s_d'] - st['ego_s_init']
             if delta_ego > delta_sd:
+                # ego가 s_d를 지남 → 회피 완료
                 self._avoid_state = None
                 self._clear_candidates()
             else:
                 return self._build_from_avoid_state(st), 'spline_avoid'
 
-        # 2. track 없거나 범위 밖 → free
+        # 2. track 없으면 free처럼 달리기
         if self.track is None:
             return self._build_passthrough(), 'free'
 
+        # 3. 전방 거리 계산
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
         cyaw = math.cos(self.eyaw)
         syaw = math.sin(self.eyaw)
         fwd_dist = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
 
+        # 장애물이 뒤에 있거나 4m 초과 → free
         if fwd_dist <= 0.0 or fwd_dist > 4.0:
             return self._build_passthrough(), 'free'
 
-        # 3. Frenet 장애물 위치
+        # 4. Frenet 장애물 위치
         s_obs, d_obs = self.to_frenet(ox, oy)
         s_obs_rel = self.ego_s + (s_obs - self.ego_s) % self.s_total
         approach = s_obs_rel - self.ego_s
 
+        # 너무 가까워서 경로 생성 불가 → trailing(속도 제어만)
         if approach < self.s_in:
-            return self._build_passthrough(), 'free'
-
-        # 4. 장애물 s 위치에서 좌/우 벽과의 중간점을 회피 목표로 설정
-        dl_obs = self._dl_at(s_obs_rel)   # 레이스라인 → 좌벽 거리
-        dr_obs = self._dr_at(s_obs_rel)   # 레이스라인 → 우벽 거리
-        d_avoid_left  = (d_obs + dl_obs) / 2.0    # 장애물↔좌벽 중간
-        d_avoid_right = (d_obs - dr_obs) / 2.0    # 장애물↔우벽 중간
+            return self._build_trailing(), 'trailing'
 
         # 5. 좌/우 후보 생성 및 평가
         candidates = []
-        for d_avoid, label in [(d_avoid_left, 'left'), (d_avoid_right, 'right')]:
+        for d_avoid, label in [(d_obs + self.d_safe, 'left'),
+                                (d_obs - self.d_safe, 'right')]:
             st = self._make_avoidance_state(s_obs_rel, d_avoid, label, d_obs)
             cost = self._evaluate_state(st, ox, oy) if st is not None else None
             candidates.append({'state': st, 'cost': cost})
@@ -1037,7 +1035,7 @@ class LocalPlanning(Node):
 
         feasible = [c for c in candidates if c['cost'] is not None]
         if not feasible:
-            return self._build_passthrough(), 'free'
+            return self._build_trailing(), 'trailing'
 
         # 6. 최적 후보 커밋
         best = min(feasible, key=lambda c: c['cost'])
@@ -1134,18 +1132,11 @@ class LocalPlanning(Node):
             dr = -self._dr_at(s) + self.margin
             if d > dl or d < dr:
                 return None
-        # 2) Cartesian 변환 + PNG 벽 20cm 근접 체크
+        # 2) min distance to obstacle (must clear inflated safety distance)
         xs = np.empty_like(s_seq)
         ys = np.empty_like(s_seq)
         for k, (s, d) in enumerate(zip(s_seq, d_seq)):
             xs[k], ys[k] = self.to_cartesian(s, d)
-            if self._wall_mask_med is not None:
-                col = int((xs[k] - self._wall_ox) / self._wall_res)
-                row = int(self._wall_h - 1 - (ys[k] - self._wall_oy) / self._wall_res)
-                if (0 <= row < self._wall_h and 0 <= col < self._wall_w
-                        and self._wall_mask_med[row, col]):
-                    return None  # PNG 벽 15cm 이내 → infeasible
-        # 3) min distance to obstacle (must clear inflated safety distance)
         obs_dist = float(np.min(np.hypot(xs - obs_x, ys - obs_y)))
         safety = self.obs_radius + self.margin
         if obs_dist < safety:
