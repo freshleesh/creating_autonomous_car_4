@@ -1011,8 +1011,8 @@ class LocalPlanning(Node):
         syaw = math.sin(self.eyaw)
         fwd_dist = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
 
-        # 장애물이 뒤에 있거나 4m 초과 → free
-        if fwd_dist <= 0.0 or fwd_dist > 4.0:
+        # 장애물이 뒤에 있거나 trigger_range 초과 → free
+        if fwd_dist <= 0.0 or fwd_dist > self.trigger_range:
             return self._build_passthrough(), 'free'
 
         # 4. Frenet 장애물 위치
