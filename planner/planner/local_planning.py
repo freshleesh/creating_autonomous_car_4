@@ -28,6 +28,7 @@ import math
 
 import numpy as np
 from scipy.interpolate import CubicSpline, PchipInterpolator
+from scipy.ndimage import binary_dilation
 
 import rclpy
 from rclpy.node import Node
@@ -52,7 +53,7 @@ def quaternion_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
 
 def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
     # --- tunable parameters ---
-    r_min = 0.05    # [m] ignore returns closer than this
+    r_min = 0.03    # [m] ignore returns closer than this
     r_max = 10.0    # [m] ignore returns farther than this
 
     n = ranges.shape[0]
@@ -72,7 +73,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
     
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
-    sigma      = 0.3   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
+    sigma      = 0.2   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
     min_points = 9      # 클러스터링 충족하는 포인트 수 (벽 반사 단편 제거)
 
 
@@ -135,8 +136,7 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
 
 def l_shape_fitting(clusters):
     # --- tunable parameters ---
-    max_obs_size = 1.3       # 장애물 길이 범위
-    min_size     = 0.15       
+    max_obs_size = 1.5       # 장애물 길이 범위
     min_edge     = 0.01
     n_angles     = 90
 
@@ -210,20 +210,20 @@ def l_shape_fitting(clusters):
 
 
 
-def tracking(obstacles, track, dt: float, ego, max_misses: int = 60):
+
+def tracking(obstacles, track, dt: float, ego, max_misses: int = 15):
     # --- tunable parameters ---
-    opp_max_lat     = 5       # 좌우 트래킹 범위
     Q_scale         = 0.5     # 칼만필터 노이즈 공분산
     R_scale         = 0.5     # 측정 노이즈 가중치
     assoc_threshold = 1.5     # 동일한 물체로 인식하는 거리 기준 (코너 예측 오차 대응)
-    lidar_to_base_x = 0.5     # 라이다 기준 좌표 거리
+    lidar_to_base_x = 0.27    # 라이다 기준 좌표 거리 (scan_cb 필터와 동일)
 
     ex, ey, eyaw = ego
 
     meas = None
     best_dist = float('inf')
     for (cx_l, cy_l, w, h) in obstacles:
-        if not (0.0 < cx_l < 15.0 and abs(cy_l) <= opp_max_lat):
+        if not (0.0 < cx_l < 15.0):
             continue
         bx = cx_l + lidar_to_base_x
         by = cy_l
@@ -308,16 +308,20 @@ def trailing(track, ego, ego_v) -> float:
     `ego`   = (ex, ey, eyaw) ;  `ego_v` = ego forward speed [m/s].
     True PD on the gap: kp on the gap error, kd on the *closing* speed.
     """
+
+
     # --- tunable parameters ---
-    base_speed    = 8.0   # [m/s] free-running race speed
-    desired_gap   = 1.0   # [m] PD 목표 거리
-    detect_range  = 6.0   # [m] 이 거리부터 PD 감속 시작
-    stop_gap      = 3.0   # [m] 이 거리 이내 → 완전 정지
-    kp            = 3.0   # P gain: gap 오차 1m당 속도 보정
-    kd            = 4.0   # D gain: closing speed 1m/s당 보정
-    max_speed     = 8.0   # [m/s] absolute speed cap
-    full_stop     = 0.2   # [m] 최근접 완전 정지
-    emergency_stop = 0.5  # [m] 최근접 최저 속도
+    base_speed   = 8.0   # [m/s] free-running race speed
+    desired_gap  = 1.0   # [m] PD 목표 거리
+    detect_range = 4.0   # [m] 이 거리부터 PD 감속 시작
+    stop_gap     = 2.0   # [m] 이 거리 이내 → 완전 정지
+    kp           = 3.0   # P gain: gap 오차 1m당 속도 보정
+    kd           = 4.0   # D gain: closing speed 1m/s당 보정
+    max_speed    = 8.0   # [m/s] absolute speed cap
+
+
+
+
 
     # 1. No opponent in view -> race at full speed.
     if track is None:
@@ -340,13 +344,7 @@ def trailing(track, ego, ego_v) -> float:
     if opp_dist <= stop_gap:
         return 0.0
 
-    # 5. 최근접 안전 임계값
-    if opp_dist <= full_stop:
-        return 0.0
-    if opp_dist <= emergency_stop:
-        return 0.5
-
-    # 6. PD speed
+    # 5. PD speed
     speed = base_speed + kp * (opp_dist - desired_gap) + kd * closing
     speed = max(0.0, min(speed, base_speed, max_speed))
 
@@ -412,22 +410,41 @@ class LocalPlanning(Node):
         self.s_blend       = float(gp('s_blend',        3.0))   # [m]
 
         # ---- avoidance (spline_avoid) ---------------------------------------
-        self.d_safe        = float(gp('d_safe',       0.3))     # [m] lateral offset
-        self.s_in          = float(gp('s_in',         2.0))     # [m] min approach gap
-        self.s_out         = float(gp('s_out',        2.5))     # [m] peak -> raceline
+        self.d_safe        = float(gp('d_safe',       0.6))     # [m] lateral offset
+        self.s_in          = float(gp('s_in',         1.5))     # [m] min approach gap
+        self.s_out         = float(gp('s_out',        4.0))     # [m] peak -> raceline
         self.trigger_range = float(gp('trigger_range', 1.5))    # [m] forward trigger range
         self.margin        = float(gp('margin',       0.1))     # [m] wall/obstacle margin
         self.obs_radius    = float(gp('obs_radius',   0.4))     # [m] obstacle inflate
         self.track_half_w  = float(gp('track_half_w', 0.8))     # [m] fallback half-width
         self.a_lat_max     = float(gp('a_lat_max',    6.0))     # [m/s^2] lat accel cap
-        self.vx_scale_avoid = float(gp('vx_scale_avoid', 0.5))  # avoidance vx multiplier
+        self.vx_scale_avoid = float(gp('vx_scale_avoid', 0.7))  # avoidance vx multiplier
 
         # ---- wall clamping (per-sample clamp + PCHIP refit) -----------------
         self.clamp_to_walls = bool(gp('clamp_to_walls', True))
         self.clamp_buffer   = float(gp('clamp_buffer',  0.05))     # [m]
 
         # ---- avoidance shape ------------------------------------------------
-        self.s_hold = float(gp('s_hold', 1.5))  # [m] 가까운 구간 경로 유지 거리
+        self.s_hold = float(gp('s_hold', 1.0))  # [m] 가까운 구간 경로 유지 거리
+
+
+
+        # ---- PNG wall mask --------------------------------------------------
+        _PNG = ('/home/maeng/creating_autonomous_car_ws/src/creating_autonomous_car'
+                '/stack_master/maps/h_0602/h_0602.png')
+        self._wall_png  = str(gp('map_png', _PNG))
+        self._wall_res  = float(gp('map_res',  0.050))
+        self._wall_ox   = float(gp('map_ox',  -25.902))
+        self._wall_oy   = float(gp('map_oy',  -17.107))
+        self._wall_mask       = None   # 10cm — 장애물 입력 필터
+        self._wall_mask_med   = None   # 15cm — 회피경로 벽 체크
+        self._wall_mask_large = None   # 20cm — track 즉시 소멸
+        self._wall_mask_xl    = None   # 30cm — 저속 정적 반사 소멸 (돌출벽 대응)
+        self._wall_h    = 0
+        self._wall_w    = 0
+        self._load_wall_mask()
+
+
 
         # ---- Frenet state ---------------------------------------------------
         self._sx = None
@@ -444,7 +461,6 @@ class LocalPlanning(Node):
         self.track = None
         self._front_stop = False       # -10°~+10°, 15cm 이내 장애물 → 정지
         self.last_scan_t = None
-        self._occ_map    = None
         self._map_array  = None
         self._map_res    = None
         self._map_ox     = None
@@ -482,10 +498,53 @@ class LocalPlanning(Node):
             f'global={self.global_topic} -> local={self.local_topic}')
 
     # ================================================================== #
+    # PNG wall mask
+    # ================================================================== #
+    def _load_wall_mask(self):
+        """PNG 맵에서 검은색 벽 픽셀을 읽어 세 가지 마진의 이진 마스크를 생성.
+
+        _wall_mask       (10cm) : 장애물 입력 필터
+        _wall_mask_large (20cm) : track 즉시 소멸
+        _wall_mask_xl    (30cm) : 저속 정적 반사 소멸 — 돌출벽 대응
+        """
+        try:
+            from PIL import Image
+            img = Image.open(self._wall_png).convert('L')
+            arr = np.array(img, dtype=np.uint8)
+        except ImportError:
+            import cv2
+            arr = cv2.imread(self._wall_png, cv2.IMREAD_GRAYSCALE)
+        if arr is None:
+            self.get_logger().warn(f'wall mask: PNG 로드 실패 ({self._wall_png})')
+            return
+        wall = arr < 90
+        n_sm = max(1, int(math.ceil(0.10 / self._wall_res)))
+        n_md = max(1, int(math.ceil(0.15 / self._wall_res)))
+        n_lg = max(1, int(math.ceil(0.20 / self._wall_res)))
+        n_xl = max(1, int(math.ceil(0.30 / self._wall_res)))
+        self._wall_mask       = binary_dilation(wall, structure=np.ones((2*n_sm+1, 2*n_sm+1), dtype=bool))
+        self._wall_mask_med   = binary_dilation(wall, structure=np.ones((2*n_md+1, 2*n_md+1), dtype=bool))
+        self._wall_mask_large = binary_dilation(wall, structure=np.ones((2*n_lg+1, 2*n_lg+1), dtype=bool))
+        self._wall_mask_xl    = binary_dilation(wall, structure=np.ones((2*n_xl+1, 2*n_xl+1), dtype=bool))
+        self._wall_h, self._wall_w = arr.shape
+        self.get_logger().info(
+            f'wall mask ready: {self._wall_h}×{self._wall_w} px '
+            f'(10cm / 15cm / 20cm / 30cm)')
+
+    def _is_on_wall_png(self, gx: float, gy: float) -> bool:
+        """글로벌 좌표 (gx, gy)가 PNG 벽 마스크 위이면 True."""
+        if self._wall_mask is None:
+            return False
+        col = int((gx - self._wall_ox) / self._wall_res)
+        row = int(self._wall_h - 1 - (gy - self._wall_oy) / self._wall_res)
+        if 0 <= row < self._wall_h and 0 <= col < self._wall_w:
+            return bool(self._wall_mask[row, col])
+        return False
+
+    # ================================================================== #
     # ROS callbacks
     # ================================================================== #
     def _map_cb(self, msg):
-        self._occ_map = msg
         info = msg.info
         self._map_array  = np.array(msg.data, dtype=np.int8).reshape(info.height, info.width)
         self._map_res    = info.resolution
@@ -493,25 +552,6 @@ class LocalPlanning(Node):
         self._map_oy     = info.origin.position.y
         self._map_w      = info.width
         self._map_h      = info.height
-
-    def _is_on_static_map(self, gx, gy, w=0.5, h=0.35, threshold=50):
-        """중심점 3×3 셀 중 2개 이상 occupied → 벽 위 클러스터로 판정.
-
-        벽 가까이 있는 실제 장애물 오탐을 막기 위해 엄격한 조건 유지.
-        (5×5 any-occupied는 벽 0.10m 이내 실제 장애물도 걸러냄)
-        """
-        if self._map_array is None:
-            return False
-        col = int((gx - self._map_ox) / self._map_res)
-        row = int((gy - self._map_oy) / self._map_res)
-        occupied = 0
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                r, c = row + dr, col + dc
-                if 0 <= r < self._map_h and 0 <= c < self._map_w:
-                    if self._map_array[r, c] >= threshold:
-                        occupied += 1
-        return occupied >= 2
 
     def _remove_wall_scan_points(self, x, y, threshold=50, radius=1):
         """맵의 occupied 셀 주변 radius 셀 이내 스캔 포인트를 NaN으로 제거."""
@@ -583,23 +623,39 @@ class LocalPlanning(Node):
             by = cy_l
             gx = self.ex + bx * math.cos(self.eyaw) - by * math.sin(self.eyaw)
             gy = self.ey + bx * math.sin(self.eyaw) + by * math.cos(self.eyaw)
-            # 맵 필터
-            if self._is_on_static_map(gx, gy, w, h):
+            # PNG 벽 마스크 필터: 벽 5cm 이내 → 정적 장애물로 제거
+            if self._is_on_wall_png(gx, gy):
                 continue
 
-            # Frenet 필터: 트랙 범위 밖이면 벽으로 간주
+            # Frenet 필터: 트랙 범위 + 글로벌 레이스라인 ±40cm
             if self._sx is not None:
                 s_obs, d_obs = self.to_frenet(gx, gy)
                 dl = self._dl_at(s_obs)
                 dr = self._dr_at(s_obs)
                 wall_buf = 0.1
+                # 트랙 경계 밖
                 if d_obs > dl - wall_buf or d_obs < -dr + wall_buf:
                     continue
+
             dynamic_obstacles.append((cx_l, cy_l, w, h))
         obstacles = dynamic_obstacles
 
         ego = (self.ex, self.ey, self.eyaw)
         self.track = tracking(obstacles, self.track, dt, ego)
+
+        # track 상태 벽 체크: 20cm 즉시 소멸 + 30cm & 저속 → 정적 반사(돌출벽) 소멸
+        if self.track is not None:
+            state, P, misses, hits = self.track
+            tx, ty = float(state[0]), float(state[1])
+            speed  = math.hypot(float(state[2]), float(state[3]))
+            col = int((tx - self._wall_ox) / self._wall_res)
+            row = int(self._wall_h - 1 - (ty - self._wall_oy) / self._wall_res)
+            in_bounds = 0 <= row < self._wall_h and 0 <= col < self._wall_w
+            if in_bounds and self._wall_mask_large is not None and self._wall_mask_large[row, col]:
+                self.track = None  # 20cm 이내 → 즉시 소멸
+            elif in_bounds and self._wall_mask_xl is not None and self._wall_mask_xl[row, col]:
+                if speed < 1.0:  # 30cm 이내 + 저속 → 돌출벽 정적 반사
+                    self.track = None
 
         # 1.5) Publish RViz Markers for Detection and Tracking
         self._publish_detection_markers(obstacles)
@@ -933,10 +989,60 @@ class LocalPlanning(Node):
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
-        """Trailing only (avoidance disabled).
-        track 유무 관계없이 항상 trailing() 경유 → base_speed 캡 적용.
-        """
-        return self._build_trailing(), 'trailing'
+        """4m 이내 장애물 감지 시 장애물↔벽 중간점으로 회피, 불가능하면 free 폴백."""
+        # 1. 커밋된 회피 경로 진행 중
+        if self._avoid_state is not None:
+            st = self._avoid_state
+            delta_ego = (self.ego_s - st['ego_s_init']) % self.s_total
+            delta_sd  = st['s_d'] - st['ego_s_init']
+            if delta_ego > delta_sd:
+                self._avoid_state = None
+                self._clear_candidates()
+            else:
+                return self._build_from_avoid_state(st), 'spline_avoid'
+
+        # 2. track 없거나 범위 밖 → free
+        if self.track is None:
+            return self._build_passthrough(), 'free'
+
+        ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        cyaw = math.cos(self.eyaw)
+        syaw = math.sin(self.eyaw)
+        fwd_dist = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
+
+        if fwd_dist <= 0.0 or fwd_dist > 4.0:
+            return self._build_passthrough(), 'free'
+
+        # 3. Frenet 장애물 위치
+        s_obs, d_obs = self.to_frenet(ox, oy)
+        s_obs_rel = self.ego_s + (s_obs - self.ego_s) % self.s_total
+        approach = s_obs_rel - self.ego_s
+
+        if approach < self.s_in:
+            return self._build_passthrough(), 'free'
+
+        # 4. 장애물 s 위치에서 좌/우 벽과의 중간점을 회피 목표로 설정
+        dl_obs = self._dl_at(s_obs_rel)   # 레이스라인 → 좌벽 거리
+        dr_obs = self._dr_at(s_obs_rel)   # 레이스라인 → 우벽 거리
+        d_avoid_left  = (d_obs + dl_obs) / 2.0    # 장애물↔좌벽 중간
+        d_avoid_right = (d_obs - dr_obs) / 2.0    # 장애물↔우벽 중간
+
+        # 5. 좌/우 후보 생성 및 평가
+        candidates = []
+        for d_avoid, label in [(d_avoid_left, 'left'), (d_avoid_right, 'right')]:
+            st = self._make_avoidance_state(s_obs_rel, d_avoid, label, d_obs)
+            cost = self._evaluate_state(st, ox, oy) if st is not None else None
+            candidates.append({'state': st, 'cost': cost})
+        self._publish_candidates(candidates)
+
+        feasible = [c for c in candidates if c['cost'] is not None]
+        if not feasible:
+            return self._build_passthrough(), 'free'
+
+        # 6. 최적 후보 커밋
+        best = min(feasible, key=lambda c: c['cost'])
+        self._avoid_state = best['state']
+        return self._build_from_avoid_state(self._avoid_state), 'spline_avoid'
 
     # ================================================================== #
     # Avoidance state + feasibility
@@ -1028,11 +1134,18 @@ class LocalPlanning(Node):
             dr = -self._dr_at(s) + self.margin
             if d > dl or d < dr:
                 return None
-        # 2) min distance to obstacle (must clear inflated safety distance)
+        # 2) Cartesian 변환 + PNG 벽 20cm 근접 체크
         xs = np.empty_like(s_seq)
         ys = np.empty_like(s_seq)
         for k, (s, d) in enumerate(zip(s_seq, d_seq)):
             xs[k], ys[k] = self.to_cartesian(s, d)
+            if self._wall_mask_med is not None:
+                col = int((xs[k] - self._wall_ox) / self._wall_res)
+                row = int(self._wall_h - 1 - (ys[k] - self._wall_oy) / self._wall_res)
+                if (0 <= row < self._wall_h and 0 <= col < self._wall_w
+                        and self._wall_mask_med[row, col]):
+                    return None  # PNG 벽 15cm 이내 → infeasible
+        # 3) min distance to obstacle (must clear inflated safety distance)
         obs_dist = float(np.min(np.hypot(xs - obs_x, ys - obs_y)))
         safety = self.obs_radius + self.margin
         if obs_dist < safety:
@@ -1047,7 +1160,12 @@ class LocalPlanning(Node):
     # Visualization
     # ================================================================== #
     def _publish_local_markers(self, wpnts, mode):
-        color = (0.3, 0.8, 1.0)   # sky blue (always)
+        if mode == 'spline_avoid':
+            color, width = (1.0, 0.0, 0.0), 0.12   # 빨간색 / 굵게
+        elif mode == 'trailing':
+            color, width = (1.0, 1.0, 0.0), 0.08   # 노란색
+        else:
+            color, width = (0.2, 1.0, 0.2), 0.08   # 연두색
         ma = MarkerArray()
         line = Marker()
         line.header.frame_id = 'map'
@@ -1057,7 +1175,7 @@ class LocalPlanning(Node):
         line.type = Marker.LINE_STRIP
         line.action = Marker.ADD
         line.pose.orientation.w = 1.0
-        line.scale.x = 0.08
+        line.scale.x = width
         line.color.r, line.color.g, line.color.b, line.color.a = (*color, 1.0)
         # z above candidate (0.07) and global raceline so the local path
         # always draws on top in RViz.
@@ -1131,4 +1249,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-      
