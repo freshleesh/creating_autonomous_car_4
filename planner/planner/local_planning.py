@@ -413,7 +413,8 @@ class LocalPlanning(Node):
         self._wall_ox   = float(gp('map_ox',  _default_ox))
         self._wall_oy   = float(gp('map_oy',  _default_oy))
         self._wall_mask       = None   # 10cm — 스캔 포인트 필터
-        self._wall_mask_large = None   # 20cm — track 벽 반사 소멸
+        self._wall_mask_obs   = None   # 20cm — obstacle 중심점 필터 (벽 코너 제거)
+        self._wall_mask_large = None   # 30cm — track 벽 반사 소멸
         self._wall_h    = 0
         self._wall_w    = 0
         self._load_wall_mask()
@@ -459,11 +460,13 @@ class LocalPlanning(Node):
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
 
         # 트리거 콘 1 (직선용): 좁고 멀리
-        self._BOX_LEN        = 5.0              # [m] 콘 반경
-        self._CONE_HALF_DEG  = 17.0             # [deg] 콘 반각 (총 34°)
+        self._BOX_LEN        = 4.0              # [m] 콘 반경
+        self._CONE_HALF_DEG  = 16.0             # [deg] 콘 반각 (총 32°)
+        self._FAR_CONE_LOOKAHEAD = 0.90         # [m] 긴 콘 yaw 최대 추가 룩어헤드
+        self._CONE_FWD_OFFSET = 0.5             # [m] 트리거존 기준점 전방 오프셋
         # 트리거 콘 2 (코너용): 넓고 가까이 — 두 부채꼴 OR 조건
-        self._BOX_LEN_WIDE   = 2.5              # [m] 넓은 콘 반경
-        self._CONE_HALF_DEG_WIDE = 40.0         # [deg] 넓은 콘 반각 (총 80°)
+        self._BOX_LEN_WIDE   = 2.0              # [m] 넓은 콘 반경
+        self._CONE_HALF_DEG_WIDE = 30.0         # [deg] 넓은 콘 반각 (총 60°)
         self._MIN_HITS       = 5                # avoidance 발동 최소 연속 감지 횟수
 
         self.get_logger().info(
@@ -500,22 +503,25 @@ class LocalPlanning(Node):
             self.get_logger().warn(f'wall mask: PNG 로드 실패 ({self._wall_png})')
             return
         wall = arr < 90
-        n_sm = max(1, int(math.ceil(0.20 / self._wall_res)))   # 20cm — 스캔/클러스터 필터
-        n_lg = max(1, int(math.ceil(0.30 / self._wall_res)))   # 30cm — track kill
-        self._wall_mask       = binary_dilation(wall, structure=np.ones((2*n_sm+1, 2*n_sm+1), dtype=bool))
-        self._wall_mask_large = binary_dilation(wall, structure=np.ones((2*n_lg+1, 2*n_lg+1), dtype=bool))
+        n_sm  = max(1, int(math.ceil(0.10 / self._wall_res)))   # 10cm — 스캔 포인트 필터
+        n_obs = max(1, int(math.ceil(0.20 / self._wall_res)))   # 20cm — obstacle 중심점 필터
+        n_lg  = max(1, int(math.ceil(0.30 / self._wall_res)))   # 30cm — track kill
+        self._wall_mask       = binary_dilation(wall, structure=np.ones((2*n_sm +1, 2*n_sm +1), dtype=bool))
+        self._wall_mask_obs   = binary_dilation(wall, structure=np.ones((2*n_obs+1, 2*n_obs+1), dtype=bool))
+        self._wall_mask_large = binary_dilation(wall, structure=np.ones((2*n_lg +1, 2*n_lg +1), dtype=bool))
         self._wall_h, self._wall_w = arr.shape
         self.get_logger().info(
-            f'wall mask ready: {self._wall_h}×{self._wall_w} px (20cm / 30cm)')
+            f'wall mask ready: {self._wall_h}×{self._wall_w} px (10cm / 20cm / 30cm)')
 
     def _is_on_wall_png(self, gx: float, gy: float) -> bool:
-        """글로벌 좌표 (gx, gy)가 PNG 벽 마스크 위이면 True."""
-        if self._wall_mask is None:
+        """글로벌 좌표 (gx, gy)가 PNG 벽 마스크(20cm) 위이면 True. 벽 코너 포함."""
+        mask = self._wall_mask_obs if self._wall_mask_obs is not None else self._wall_mask
+        if mask is None:
             return False
         col = int((gx - self._wall_ox) / self._wall_res)
         row = int(self._wall_h - 1 - (gy - self._wall_oy) / self._wall_res)
         if 0 <= row < self._wall_h and 0 <= col < self._wall_w:
-            return bool(self._wall_mask[row, col])
+            return bool(mask[row, col])
         return False
 
     # ================================================================== #
@@ -593,9 +599,10 @@ class LocalPlanning(Node):
                 continue
 
             # Frenet 필터: 트랙 경계 안쪽 버퍼 이외는 제거 (벽 반사 제거)
+            # 회피 중에는 버퍼를 넓혀 근거리 obstacle이 제거되지 않도록 함
             if self._sx is not None:
                 s_obs, d_obs = self.to_frenet(gx, gy)
-                wall_buf = 0.20
+                wall_buf = 0.05 if self._avoid_state is not None else 0.12
                 if d_obs > self._dl_at(s_obs) - wall_buf or d_obs < -self._dr_at(s_obs) + wall_buf:
                     continue
 
@@ -603,7 +610,18 @@ class LocalPlanning(Node):
         obstacles = dynamic_obstacles
 
         ego = (self.ex, self.ey, self.eyaw)
-        self.track = tracking(obstacles, self.track, dt, ego)
+        # 회피 중에는 max_misses를 크게 늘려 tracking 지속
+        max_misses_arg = 25 if self._avoid_state is not None else 8
+        prev_track = self.track
+        self.track = tracking(obstacles, self.track, dt, ego, max_misses=max_misses_arg)
+
+        # 회피 중 tracking이 소멸되면 마지막 track을 코스팅으로 보존
+        if self.track is None and self._avoid_state is not None and prev_track is not None:
+            state, P, misses, hits = prev_track
+            state = state.copy()
+            state[2] *= 0.85
+            state[3] *= 0.85
+            self.track = (state, P, misses, hits)
 
         # track 상태 벽 체크: 20cm 이내 + 실제 측정 없는(misses>5) 경우만 소멸
         if self.track is not None:
@@ -677,41 +695,37 @@ class LocalPlanning(Node):
         if self.track is None or not self._is_in_trigger_box():
             return markers
         state, P, misses, hits = self.track
-        gx, gy, vx, vy = state
+        gx, gy = float(state[0]), float(state[1])
         stamp = self.get_clock().now().to_msg()
         m = Marker()
         m.header.frame_id = 'map'; m.header.stamp = stamp
         m.ns = 'tracking_pos'; m.id = 100
         m.type = Marker.CYLINDER; m.action = Marker.ADD
-        m.pose.position.x = float(gx); m.pose.position.y = float(gy); m.pose.position.z = 0.2
+        m.pose.position.x = gx; m.pose.position.y = gy; m.pose.position.z = 0.2
         m.pose.orientation.w = 1.0
         m.scale.x = m.scale.y = m.scale.z = 0.5
-        m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 0.8
+        m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.0, 1.0, 1.0
         markers.append(m)
-        speed = math.hypot(vx, vy)
-        if speed > 0.02:
-            arrow_len = max(speed * 3.0, 0.5)
-            nx = vx / speed; ny = vy / speed
-            arr = Marker()
-            arr.header.frame_id = 'map'; arr.header.stamp = stamp
-            arr.ns = 'tracking_vel'; arr.id = 101
-            arr.type = Marker.ARROW; arr.action = Marker.ADD
-            p1 = Point(); p1.x, p1.y, p1.z = float(gx), float(gy), 0.3
-            p2 = Point(); p2.x = float(gx + nx * arrow_len); p2.y = float(gy + ny * arrow_len); p2.z = 0.3
-            arr.points = [p1, p2]
-            arr.scale.x = 0.08; arr.scale.y = 0.20; arr.scale.z = 0.0
-            arr.color.r, arr.color.g, arr.color.b, arr.color.a = 1.0, 0.4, 0.7, 1.0
-            markers.append(arr)
         return markers
 
     def _cone_half_deg(self) -> float:
         return self._CONE_HALF_DEG
 
     def _cone_yaw(self) -> float:
-        """콘 방향: 레이스라인 2m 앞 지점의 heading 사용.
-        코너 진입 전에 미리 돌아가서 화끈하게 예측."""
+        """가까운(넓은) 콘 방향: 0.8m 앞 레이스라인 heading."""
         if self._sx is not None and self.s_total > 0.0:
             psi, _ = self._psi_kappa_at(self.ego_s + 0.8)
+            return psi
+        return self.eyaw
+
+    def _cone_yaw_far(self) -> float:
+        """긴(좁은) 콘 방향: 소곡률에서 민감하게, 대곡률에서 포화하도록 sqrt 스케일링."""
+        if self._sx is not None and self.s_total > 0.0:
+            _, kappa = self._psi_kappa_at(self.ego_s)
+            kappa_ref = 0.18  # [rad/m] 이 값에서 최대 룩어헤드 도달
+            t = min(abs(kappa) / kappa_ref, 1.0) ** 0.5  # concave: 소곡률 민감·대곡률 포화
+            lookahead = 0.8 + self._FAR_CONE_LOOKAHEAD * t
+            psi, _ = self._psi_kappa_at(self.ego_s + lookahead)
             return psi
         return self.eyaw
 
@@ -725,20 +739,45 @@ class LocalPlanning(Node):
 
     def _is_in_trigger_box(self) -> bool:
         """두 부채꼴(직선용·코너용) 중 하나에 들어오면 True.
-        콘 방향은 레이스라인 0.8m 앞 heading 기준."""
+        긴 콘은 곡률 적응 룩어헤드, 넓은 콘은 0.8m 룩어헤드 기준."""
         if self.track is None:
             return False
-        cone_yaw = self._cone_yaw()
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
-        cyaw = math.cos(cone_yaw)
-        syaw = math.sin(cone_yaw)
-        fwd = cyaw * (ox - self.ex) + syaw * (oy - self.ey)
-        lat = -syaw * (ox - self.ex) + cyaw * (oy - self.ey)
-        return (self._in_cone(fwd, lat, self._CONE_HALF_DEG,      self._BOX_LEN) or
-                self._in_cone(fwd, lat, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE))
+
+        # 트리거존 기준점: 차량에서 전방으로 오프셋
+        bx = self.ex + self._CONE_FWD_OFFSET * math.cos(self.eyaw)
+        by = self.ey + self._CONE_FWD_OFFSET * math.sin(self.eyaw)
+
+        # 긴(좁은) 콘: 곡률 적응 yaw
+        cone_yaw_far = self._cone_yaw_far()
+        cf, sf = math.cos(cone_yaw_far), math.sin(cone_yaw_far)
+        fwd_far = cf * (ox - bx) + sf * (oy - by)
+        lat_far = -sf * (ox - bx) + cf * (oy - by)
+
+        # 넓은(가까운) 콘: 기존 yaw
+        cone_yaw = self._cone_yaw()
+        cn, sn = math.cos(cone_yaw), math.sin(cone_yaw)
+        fwd_near = cn * (ox - bx) + sn * (oy - by)
+        lat_near = -sn * (ox - bx) + cn * (oy - by)
+
+        return (self._in_cone(fwd_far,  lat_far,  self._CONE_HALF_DEG,      self._BOX_LEN) or
+                self._in_cone(fwd_near, lat_near, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE))
+
+    def _is_in_near_cone(self) -> bool:
+        """작은(넓은) 부채꼴 안에 obstacle이 있으면 True — 속도 감속 구간 판정용."""
+        if self.track is None:
+            return False
+        ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        bx = self.ex + self._CONE_FWD_OFFSET * math.cos(self.eyaw)
+        by = self.ey + self._CONE_FWD_OFFSET * math.sin(self.eyaw)
+        cone_yaw = self._cone_yaw()
+        cn, sn = math.cos(cone_yaw), math.sin(cone_yaw)
+        fwd = cn * (ox - bx) + sn * (oy - by)
+        lat = -sn * (ox - bx) + cn * (oy - by)
+        return self._in_cone(fwd, lat, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE)
 
     def _make_cone_marker(self, mid: int, half_deg: float, radius: float,
-                          cone_yaw: float, color: tuple) -> Marker:
+                          cone_yaw: float, color: tuple, near_half: float = 0.5) -> Marker:
         """단일 부채꼴 + 후방 박스 TRIANGLE_LIST 마커 생성."""
         m = Marker()
         m.header.frame_id = 'map'
@@ -750,29 +789,29 @@ class LocalPlanning(Node):
         m.color.r, m.color.g, m.color.b, m.color.a = color
         N = 24
         half_rad = math.radians(half_deg)
-        near_half = 0.5
         sc = math.cos(cone_yaw); ss = math.sin(cone_yaw)
+        bx = self.ex + self._CONE_FWD_OFFSET * math.cos(self.eyaw)
+        by = self.ey + self._CONE_FWD_OFFSET * math.sin(self.eyaw)
         for i in range(N):
             t1 = i / N; t2 = (i + 1) / N
-            pn1 = Point(); pn1.x = self.ex + (near_half - 2.0*near_half*t1)*ss; pn1.y = self.ey - (near_half - 2.0*near_half*t1)*sc; pn1.z = 0.05
-            pn2 = Point(); pn2.x = self.ex + (near_half - 2.0*near_half*t2)*ss; pn2.y = self.ey - (near_half - 2.0*near_half*t2)*sc; pn2.z = 0.05
+            pn1 = Point(); pn1.x = bx + (near_half - 2.0*near_half*t1)*ss; pn1.y = by - (near_half - 2.0*near_half*t1)*sc; pn1.z = 0.05
+            pn2 = Point(); pn2.x = bx + (near_half - 2.0*near_half*t2)*ss; pn2.y = by - (near_half - 2.0*near_half*t2)*sc; pn2.z = 0.05
             a1 = cone_yaw - half_rad + 2.0*half_rad*t1; a2 = cone_yaw - half_rad + 2.0*half_rad*t2
-            pf1 = Point(); pf1.x = self.ex + radius*math.cos(a1); pf1.y = self.ey + radius*math.sin(a1); pf1.z = 0.05
-            pf2 = Point(); pf2.x = self.ex + radius*math.cos(a2); pf2.y = self.ey + radius*math.sin(a2); pf2.z = 0.05
+            pf1 = Point(); pf1.x = bx + radius*math.cos(a1); pf1.y = by + radius*math.sin(a1); pf1.z = 0.05
+            pf2 = Point(); pf2.x = bx + radius*math.cos(a2); pf2.y = by + radius*math.sin(a2); pf2.z = 0.05
             m.points += [pn1, pf1, pf2, pn1, pf2, pn2]
         return m
 
     def _trigger_zone_markers(self) -> list:
         """두 부채꼴 트리거 존 마커 반환. avoidance → 빨간색, free → 연두색."""
-        cone_yaw = self._cone_yaw()
         if self._avoid_state is not None:
-            c_far  = (1.0, 0.0, 0.0, 0.40)
-            c_near = (1.0, 0.3, 0.0, 0.30)
+            c_far  = (0.95, 0.05, 0.05, 0.38)
+            c_near = (0.95, 0.05, 0.05, 0.38)
         else:
-            c_far  = (0.2, 1.0, 0.2, 0.25)
-            c_near = (0.2, 1.0, 0.2, 0.18)
-        m_far  = self._make_cone_marker(200, self._CONE_HALF_DEG,      self._BOX_LEN,       cone_yaw, c_far)
-        m_near = self._make_cone_marker(201, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE,  cone_yaw, c_near)
+            c_far  = (0.15, 0.95, 0.15, 0.26)
+            c_near = (0.15, 0.95, 0.15, 0.26)
+        m_far  = self._make_cone_marker(200, self._CONE_HALF_DEG,      self._BOX_LEN,      self._cone_yaw_far(), c_far, near_half=0.25)
+        m_near = self._make_cone_marker(201, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE, self._cone_yaw(),     c_near)
         return [m_far, m_near]
 
     # ================================================================== #
@@ -990,11 +1029,12 @@ class LocalPlanning(Node):
         return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=v_cap, use_blend=False)
 
     def _build_from_avoid_state(self, st):
-        """Publish the committed avoidance spline as-is (no ego blend)."""
+        """Avoidance spline. 속도 감소는 작은(넓은) 콘 안에 들어올 때만 적용."""
+        vx_scale = self.vx_scale_avoid if self._is_in_near_cone() else 1.0
         return self._make_local_wpnts(
             target_fn=lambda s: self._avoid_d_at(s, st),
             use_curvature_cap=True,
-            vx_scale=self.vx_scale_avoid,
+            vx_scale=vx_scale,
             use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
@@ -1042,21 +1082,29 @@ class LocalPlanning(Node):
         if approach < self.s_in:
             return self._build_trailing(), 'trailing'
 
-        # 5. 좌/우 후보 생성 및 평가
+        # 5. 장애물 위치에서 좌/우 벽 갭 직접 비교 → 갭이 넓은 방향 우선
+        s_mod = s_obs_rel % self.s_total
+        gap_left  = self._dl_at(s_mod) - d_obs          # 좌벽까지 여유
+        gap_right = d_obs + self._dr_at(s_mod)           # 우벽까지 여유
+        if gap_left >= gap_right:
+            side_order = [(d_obs + self.d_safe, 'left'), (d_obs - self.d_safe, 'right')]
+        else:
+            side_order = [(d_obs - self.d_safe, 'right'), (d_obs + self.d_safe, 'left')]
+
         candidates = []
-        for d_avoid, label in [(d_obs + self.d_safe, 'left'),
-                                (d_obs - self.d_safe, 'right')]:
+        for d_avoid, label in side_order:
             st = self._make_avoidance_state(s_obs_rel, d_avoid, label, d_obs)
             cost = self._evaluate_state(st, ox, oy) if st is not None else None
             candidates.append({'state': st, 'cost': cost})
         self._publish_candidates(candidates)
 
+        # 갭 넓은 방향 우선, 불가능하면 반대 방향 fallback
         feasible = [c for c in candidates if c['cost'] is not None]
         if not feasible:
             return self._build_trailing(), 'trailing'
 
-        # 6. 최적 후보 커밋
-        best = min(feasible, key=lambda c: c['cost'])
+        # 6. 우선 방향 커밋
+        best = feasible[0]
         self._avoid_state = best['state']
         return self._build_from_avoid_state(self._avoid_state), 'spline_avoid'
 
@@ -1159,11 +1207,17 @@ class LocalPlanning(Node):
         safety = self.obs_radius + self.margin
         if obs_dist < safety:
             return None
-        # 3) cost: 1/clearance + mean |d|
+        # 3) cost: obstacle closeness + mean |d| + wall gap
+        #    경로 위 각 점에서 좌/우 벽까지 여유 평균 → 갭이 넓은 쪽이 유리
+        wall_gaps = [min(self._dl_at(s) - d, d + self._dr_at(s))
+                     for s, d in zip(s_seq, d_seq)]
+        avg_wall_gap = float(np.mean(wall_gaps))
         w_obs    = 5.0
-        w_offset = 1.0
+        w_offset = 0.3
+        w_gap    = 10.0
         return (w_obs / max(obs_dist - safety, 0.05)
-                + w_offset * float(np.mean(np.abs(d_seq))))
+                + w_offset * float(np.mean(np.abs(d_seq)))
+                + w_gap / max(avg_wall_gap, 0.05))
 
     # ================================================================== #
     # Visualization
