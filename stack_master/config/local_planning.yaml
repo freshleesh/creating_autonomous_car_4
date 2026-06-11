@@ -5,7 +5,7 @@ local_planning:
     # free          : raceline forward window only
     # trailing      : raceline + trailing PD speed cap
     # spline_avoid  : left/right spline candidates; trailing fallback
-    mode: spline_avoid
+    mode: trailing
 
     # ---- topics ------------------------------------------------------------
     scan_topic:   /scan
@@ -22,17 +22,26 @@ local_planning:
     d_safe:        0.40    # [m]  peak lateral offset — 장애물 40cm 회피 (25cm 최소 보장)
     s_in:          0.3     # [m]  min approach gap; closer than this -> free
     s_out:         1.5     # [m]  distance from peak back to raceline rejoin
-    trigger_range: 8.0     # [m]  start considering avoidance within this gap
+    trigger_range: 5.0     # [m]  start considering avoidance within this gap
     margin:        0.05    # [m]  evaluate 기준 (실질 벽 마진은 PNG 15cm가 담당)
     obs_radius:    0.05    # [m]  safety = 0.10m (lenient — 미드포인트가 실질 이격 보장)
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
 
+    # ---- trailing PID -------------------------------------------------------
+    desired_gap:           0.50   # [m]    유지할 앞차 간격
+    trailing_detect_range: 8.0    # [m]    이 거리부터 PID 반응 시작
+    trail_kp:              1.0    # P gain (gap error → m/s)
+    trail_ki:              0.2    # I gain (steady-state 속도 차이 보정)
+    trail_kd:              0.8    # D gain (closing speed 댐핑)
+    trail_int_max:         1.5    # [m/s]  적분 anti-windup 상한
+
     # ---- spline_avoid: speed limits ----------------------------------------
+    vx_max:         5.0    # [m/s]   전체 속도 상한
     a_lat_max:      6.0    # [m/s^2] lateral accel cap (curvature-based vx cap)
-    vx_scale_avoid: 0.70   # [-]     speed multiplier while on avoidance spline
+    vx_scale_avoid: 0.85   # [-]     speed multiplier while on avoidance spline
 
     # ---- spline_avoid: wall clamping (forces wall feasibility) -------------
     clamp_to_walls:  true   # [bool] enable clamp + PCHIP smoothing
     clamp_buffer:    0.05   # [m]    inset = margin + clamp_buffer = 0.25m
-    s_hold:          1.0    # [m]    이 거리까지 현재 경로 유지 후 회피 시작
+    s_hold:          0.4    # [m]    이 거리까지 현재 경로 유지 후 회피 시작
 
