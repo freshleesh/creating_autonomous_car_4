@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>scan_matching_localization</name>
+  <version>0.1.0</version>
+  <description>
+    2D LiDAR scan-to-map localization for the F1TENTH stack.
+    Provides two registration-based localizers (ICP / kiss-icp-style and NDT)
+    that match the same I/O contract as the particle_filter and cartographer
+    localization modes: subscribe /scan + /vesc/odom + /map, publish a
+    nav_msgs/Odometry pose in the map frame for robot_localization to fuse.
+  </description>
+  <maintainer email="freshleesh@gmail.com">nuc4</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>eigen</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,39 @@
+icp_localizer:
+  ros__parameters:
+    # --- topics / frames (match the rest of the stack) ---
+    scan_topic: '/scan'
+    odom_topic: '/vesc/odom'
+    imu_topic:  '/vesc/sensors/imu/raw'
+    map_topic:  '/map'
+    map_frame:  'map'
+    base_frame: 'base_link'
+    output_odom_topic: '/icp/pose/odom'
+
+    # publish_tf and seed_pose_from_tf are set from the launch file
+    # (real HW -> publish map->base_link TF; sim -> gym_bridge owns it).
+
+    # --- debug ---
+    debug_timing: true     # log per-scan registration time (throttled to 1 Hz)
+    publish_map: true      # re-publish the consumed map once (latched) for RViz
+    map_out_topic: '/map'  # topic to re-publish the map on
+
+    # --- motion model ---
+    use_imu: true                # heading prediction from IMU gyro (else odom yaw)
+    imu_yaw_scale: 1.0           # set -1.0 if the gyro z-axis sign is inverted
+
+    # --- scan filtering ---
+    min_range: 0.1
+    max_range: 15.0
+    occupancy_threshold: 65      # OccupancyGrid value treated as "occupied"
+    min_scan_points: 30
+
+    # --- ICP registration ---
+    voxel_size: 0.05             # scan downsample leaf size [m]
+    nn_cell_size: 0.50           # map nearest-neighbour grid cell [m]
+    max_correspondence_distance: 2.0   # loose gate at first iteration [m]
+    min_correspondence_distance: 0.15  # tight gate after convergence [m]
+    correspondence_decay: 0.85   # multiplier applied to the gate each iteration
+    min_correspondence_pairs: 10
+    max_iterations: 20
+    transform_epsilon: 0.001     # translation convergence [m]
+    rotation_epsilon: 0.0001     # rotation convergence [rad]

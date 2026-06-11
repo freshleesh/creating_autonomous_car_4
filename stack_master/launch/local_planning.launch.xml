@@ -27,7 +27,7 @@
   <arg name="map"    description="Map name (folder in stack_master/maps/)"/>
   <arg name="sim"    default="false" description="true: sim odom (/vesc/odom); false: real car odom (/car_state/odom)"/>
   <arg name="config" default="$(find-pkg-share stack_master)/config/ppc.yaml"/>
-  <arg name="mode"   default="spline_avoid"
+  <arg name="mode"   default="trailing"
        description="free | trailing | spline_avoid"/>
   <arg name="planner_config"
        default="$(find-pkg-share stack_master)/config/local_planning.yaml"

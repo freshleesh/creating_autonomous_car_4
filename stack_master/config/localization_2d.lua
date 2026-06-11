@@ -80,7 +80,7 @@ options = {
   odom_frame = "odom",                     -- provide_odom_frame=false라 실제로는 미사용
   provide_odom_frame = false,              -- true면 map→odom→base_link 분리 발행. 우리는 EKF가 따로 있어 불필요
   publish_frame_projected_to_2d = true,    -- 포즈를 2D 평면에 투영 (roll/pitch/z 제거)
-  use_odometry = false,                    -- /odom(=/vesc/odom) 토픽을 매칭 초기값으로 사용 안 함.
+  use_odometry = true,                    -- /odom(=/vesc/odom) 토픽을 매칭 초기값으로 사용 안 함.
                                            -- VESC 오도메트리가 미끄러짐에 취약해서 끔. 스캔매칭 단독.
   use_nav_sat = false,
   use_landmarks = false,
@@ -110,9 +110,9 @@ MAP_BUILDER.num_background_threads = 6       -- 백그라운드(제약 탐색) �
 -- [1] Local SLAM — 매 스캔을 서브맵에 정합 (고주파 포즈의 품질 결정)
 -- ---------------------------------------------------------------------------
 TRAJECTORY_BUILDER_2D.min_range = 0.12   -- 이보다 가까운 리턴 버림 (차체/마운트 반사 제거)
-TRAJECTORY_BUILDER_2D.max_range = 10.    -- 이보다 먼 리턴 버림. 트랙이 넓어 먼 벽이 안 보이면 ↑,
+TRAJECTORY_BUILDER_2D.max_range = 30.    -- 이보다 먼 리턴 버림. 트랙이 넓어 먼 벽이 안 보이면 ↑,
                                          -- 먼 거리 노이즈로 매칭이 흔들리면 ↓
-TRAJECTORY_BUILDER_2D.missing_data_ray_length = 3.  -- max_range 밖 리턴을 이 길이만큼 "빈 공간"으로 취급
+TRAJECTORY_BUILDER_2D.missing_data_ray_length = 5.  -- max_range 밖 리턴을 이 길이만큼 "빈 공간"으로 취급
 TRAJECTORY_BUILDER_2D.use_imu_data = true           -- IMU(자이로)로 회전 초기 추정 (실차 전용. sim 파일은 false)
 TRAJECTORY_BUILDER_2D.use_online_correlative_scan_matching = true
                                          -- ceres 정밀 정합 전에 brute-force 탐색으로 초기값을 찾음.
@@ -128,6 +128,15 @@ TRAJECTORY_BUILDER_2D.ceres_scan_matcher.rotation_weight = 0.1 --25
                                          -- ↓ = 스캔이 회전을 자유롭게 보정 (코너에서 밀릴 때, 테스트 A)
                                          -- ↑ = 앵커 고수 (직선 회전 지터엔 ↑가 답이지만, correlative가
                                          --   틀린 회전을 잡은 경우 그걸 굳히는 부작용도 있음, 테스트 B)
+TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.linear_search_window = 0.2 -- 기본 0.1
+                                         -- correlative가 "예측 포즈" 주변을 brute-force 탐색하는 병진 박스 [±m].
+                                         -- 이 박스는 이전 포즈가 아니라 pose extrapolator 예측 기준이라,
+                                         -- 실질 한계는 "프레임당 이동량"이 아니라 "속도 예측 오차"다.
+                                         -- 저속 정속이면 등속 외삽이 잘 맞아 0.1로 충분하지만, 고속(특히 벽
+                                         -- 끝 코너 앞 감속)에선 등속 모델이 못 따라가 잔차가 0.1을 넘고 →
+                                         -- 진짜 포즈가 박스 밖 → 박스 안 틀린 국소최적 채택 → 발산("끝에서 터짐").
+                                         -- ↑ = 고속 잔차 수용(증상완화), 비용 O(window²)로 CPU ↑ (테스트 F).
+                                         -- 근본 처방은 use_odometry=true로 예측 자체를 정확히 만드는 것(B).
 -- TRAJECTORY_BUILDER_2D.real_time_correlative_scan_matcher.angular_search_window = math.rad(20.)
                                          -- (기본값 20°) correlative가 IMU 예측 주변을 탐색하는 회전 범위.
                                          -- 코너에서 yaw가 통째로 틀어지는 문제는 이걸 8~10°로 줄여
@@ -143,7 +152,7 @@ TRAJECTORY_BUILDER_2D.num_accumulated_range_data = 10
 -- ---------------------------------------------------------------------------
 -- [2] Pose Graph — pbstream 옛 맵과 재정합해 드리프트 보정 (점프의 근원)
 -- ---------------------------------------------------------------------------
-POSE_GRAPH.constraint_builder.min_score = 0.65
+POSE_GRAPH.constraint_builder.min_score = 0.5
                                          -- 제약(스캔↔옛 서브맵 매칭) 채택 최소 점수 [0~1].
                                          -- ↑ = 가짜 제약/텔레포트 방지 (테스트 D)
                                          -- ↓ = 보정 잘 받아들임, 드리프트 누적 방지 (테스트 C)
@@ -158,18 +167,19 @@ TRAJECTORY_BUILDER.pure_localization_trimmer = {
 POSE_GRAPH.optimize_every_n_nodes = 3    -- 노드 3개마다 그래프 최적화. 매핑에 비해 낮춰줘야함.
                                          -- ↓ = 보정 자주(작은 점프 여러 번, 테스트 C)
                                          -- ↑ = 점프 드묾(대신 한 번에 크게 점프, 테스트 B)
-POSE_GRAPH.constraint_builder.sampling_ratio = 0.1
+POSE_GRAPH.constraint_builder.sampling_ratio = 0.15
                                          -- 제약 후보를 탐색할 노드 비율. ↑ = 보정 기회 많음/CPU 비쌈 (테스트 C↔F)
 
-POSE_GRAPH.global_sampling_ratio = 0.00 -- 0.003 -- 전역 매칭 샘플링 비율.
+POSE_GRAPH.global_sampling_ratio = 0.03 -- 0.003 -- 전역 매칭 샘플링 비율.
                                          -- 0 = 전역 재인식 OFF: 초기 포즈는 set_initial_pose_node에 전적으로
                                          -- 의존하고, 추적을 잃으면 자력 복구 불가. 대신 레이스 중 비슷한 벽
                                          -- 구간으로 텔레포트할 위험이 없음 (테스트 D/E 트레이드오프)
-POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.linear_search_window = 3. -- 제약 탐색 병진 범위 [m]
-POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.angular_search_window = math.rad(30.) -- 제약 탐색 회전 범위
+POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.linear_search_window = 2. -- 제약 탐색 병진 범위 [m]
+POSE_GRAPH.constraint_builder.fast_correlative_scan_matcher.angular_search_window = math.rad(45.) -- 제약 탐색 회전 범위
                                          -- 두 window: 드리프트가 이 범위를 넘으면 제약을 못 찾음 (↑ 필요, 테스트 C).
                                          -- 넓을수록 오매칭 위험 + CPU ↑ (테스트 D/F)
-
+POSE_GRAPH.optimization_problem.odometry_translation_weight = 0.
+POSE_GRAPH.optimization_problem.odometry_rotation_weight = 0.
 -- Localization 전용으로 설정
 -- POSE_GRAPH.global_constraint_search_after_n_seconds = 10. -- 전역 제약 조건 검색 주기
 

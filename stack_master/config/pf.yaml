@@ -4,7 +4,7 @@ particle_filter:
     # scan_topic: '/scan'
     # odometry_topic: '/vesc/odom'
     # range data downsampling
-    publis_tf: false
+    publis_tf: true
     angle_step: 18
     max_particles: 4000
     squash_factor: 2.2

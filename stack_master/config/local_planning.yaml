@@ -27,17 +27,18 @@ local_planning:
     obs_radius:    0.05    # [m]  safety = 0.10m (lenient — 미드포인트가 실질 이격 보장)
     track_half_w:  0.8     # [m]  fallback track half-width if CSV lacks dl/dr
 
-    # ---- trailing PID -------------------------------------------------------
-    desired_gap:           0.50   # [m]    유지할 앞차 간격
-    trailing_detect_range: 8.0    # [m]    이 거리부터 PID 반응 시작
-    trail_kp:              1.0    # P gain (gap error → m/s)
-    trail_ki:              0.2    # I gain (steady-state 속도 차이 보정)
-    trail_kd:              0.8    # D gain (closing speed 댐핑)
-    trail_int_max:         1.5    # [m/s]  적분 anti-windup 상한
+    # ---- trailing (감속 + 정지, ramp) + 시야(FOV) --------------------------
+    # 상대가 전방 시야(±fov/2, detect_range 이내)에 들어오면 속도를 선형 감속,
+    # stop_gap 이내면 완전 정지. 상대 없으면 캡 없음(레이스라인 속도 그대로).
+    trailing_detect_range: 5.0    # [m]    이 거리부터 감속 시작 (속도 = max_speed)
+    trailing_stop_gap:     3.0    # [m]    이 거리 이내 → 완전 정지 (속도 = 0)
+    trailing_max_speed:    6.0    # [m/s]  감속 시작 시점 속도 상한 (ramp 천장)
+    trailing_kd:           4.0    # 접근(closing) 속도당 추가 감속 gain
+    trailing_fov_deg:      60.0   # [deg]  전체 시야각 (±30°); 이 밖의 상대는 무시
 
     # ---- spline_avoid: speed limits ----------------------------------------
-    vx_max:         5.0    # [m/s]   전체 속도 상한
-    a_lat_max:      6.0    # [m/s^2] lateral accel cap (curvature-based vx cap)
+    vx_max:         15.0    # [m/s]   전체 속도 상한
+    a_lat_max:      7.0    # [m/s^2] lateral accel cap (curvature-based vx cap)
     vx_scale_avoid: 0.85   # [-]     speed multiplier while on avoidance spline
 
     # ---- spline_avoid: wall clamping (forces wall feasibility) -------------

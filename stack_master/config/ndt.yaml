@@ -1,0 +1,40 @@
+ndt_localizer:
+  ros__parameters:
+    # --- topics / frames (match the rest of the stack) ---
+    scan_topic: '/scan'
+    odom_topic: '/vesc/odom'
+    imu_topic:  '/vesc/sensors/imu/raw'
+    map_topic:  '/map'
+    map_frame:  'map'
+    base_frame: 'base_link'
+    output_odom_topic: '/ndt/pose/odom'
+
+    # publish_tf and seed_pose_from_tf are set from the launch file
+    # (real HW -> publish map->base_link TF; sim -> gym_bridge owns it).
+
+    # --- debug ---
+    debug_timing: true     # log per-scan registration time (throttled to 1 Hz)
+    publish_map: true      # re-publish the consumed map once (latched) for RViz
+    map_out_topic: '/map'  # topic to re-publish the map on
+
+    # --- motion model ---
+    use_imu: true                # heading prediction from IMU gyro (else odom yaw)
+    imu_yaw_scale: 1.0           # set -1.0 if the gyro z-axis sign is inverted
+
+    # --- scan filtering ---
+    min_range: 0.1
+    max_range: 15.0
+    occupancy_threshold: 65
+    min_scan_points: 30
+
+    # --- NDT registration ---
+    voxel_size: 0.10             # scan downsample leaf size [m]
+    ndt_resolution: 1.0          # map Gaussian cell size [m]
+    min_points_per_cell: 5       # cells with fewer points are ignored
+    min_cell_variance: 0.06      # covariance eigenvalue floor [m^2] -> ~0.25 m std; widens basin
+    max_mahalanobis_sq: 30.0     # skip points beyond this squared Mahalanobis distance
+    step_size: 1.0               # Gauss-Newton step scale
+    max_iterations: 20
+    transform_epsilon: 0.001     # translation convergence [m]
+    rotation_epsilon: 0.0001     # rotation convergence [rad]
+    hessian_regularization: 0.000001

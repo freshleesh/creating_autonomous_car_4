@@ -194,7 +194,7 @@ class PPNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'base_link'
         msg.drive.steering_angle = steer
-        msg.drive.speed = speed
+        msg.drive.speed = speed/1.8
         self.drive_pub.publish(msg)
 
     def _compute(self):

@@ -4,7 +4,7 @@
   <arg name="sim"          default="false"        description="Use simulator (true) or real hardware (false)"/>
   <arg name="map"                                 description="Map name (search stack_master/maps/)"/>
   <arg name="mapping"      default="false"        description="Run cartographer SLAM to build a new map (true) or localize on existing map (false)"/>
-  <arg name="localization" default="cartographer" description="Localization algorithm: cartographer | pf "/>
+  <arg name="localization" default="cartographer" description="Localization algorithm: cartographer | pf | kiss-icp | ndt "/>
   <arg name="vehicle_config" default="$(find-pkg-share stack_master)/config/vehicle_config.yaml"/>
   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
 
@@ -161,6 +161,53 @@
 
       <node pkg="robot_localization" exec="ekf_node" name="ekf_localization" output="screen">
         <param from="$(find-pkg-share stack_master)/config/ekf_pf.yaml"/>
+        <remap from="odometry/filtered" to="/car_state/odom"/>
+      </node>
+    </group>
+
+    <!-- Scan-to-map registration localizers (C++): same I/O contract as pf.
+         publish_tf: real HW -> localizer owns map->base_link; sim -> gym_bridge owns it.
+         seed_pose_from_tf: in sim, grab the start pose from gym_bridge's map->base_link TF. -->
+    <let name="smatch_publish_tf" value="true"  unless="$(var sim)"/>
+    <let name="smatch_publish_tf" value="false" if="$(var sim)"/>
+    <let name="smatch_seed_tf"    value="false" unless="$(var sim)"/>
+    <let name="smatch_seed_tf"    value="true"  if="$(var sim)"/>
+    <!-- IMU heading prediction: real HW has /vesc/sensors/imu/raw; gym (sim) has no IMU. -->
+    <let name="smatch_use_imu"    value="true"  unless="$(var sim)"/>
+    <let name="smatch_use_imu"    value="false" if="$(var sim)"/>
+
+    <!-- KISS-ICP-style Localization -->
+    <group if="$(eval '\'$(var localization)\' == \'kiss-icp\'')">
+      <node pkg="scan_matching_localization" exec="icp_localizer_node"
+            name="icp_localizer" output="screen">
+        <param from="$(find-pkg-share stack_master)/config/icp.yaml"/>
+        <param name="publish_tf"        value="$(var smatch_publish_tf)"/>
+        <param name="seed_pose_from_tf" value="$(var smatch_seed_tf)"/>
+        <param name="use_imu"           value="$(var smatch_use_imu)"/>
+        <param name="publish_map"       value="true"/>   <!-- node also re-publishes /map for RViz -->
+
+      </node>
+
+      <node pkg="robot_localization" exec="ekf_node" name="ekf_localization" output="screen">
+        <param from="$(find-pkg-share stack_master)/config/ekf_icp.yaml"/>
+        <remap from="odometry/filtered" to="/car_state/odom"/>
+      </node>
+    </group>
+
+    <!-- NDT Localization -->
+    <group if="$(eval '\'$(var localization)\' == \'ndt\'')">
+      <node pkg="scan_matching_localization" exec="ndt_localizer_node"
+            name="ndt_localizer" output="screen">
+        <param from="$(find-pkg-share stack_master)/config/ndt.yaml"/>
+        <param name="publish_tf"        value="$(var smatch_publish_tf)"/>
+        <param name="seed_pose_from_tf" value="$(var smatch_seed_tf)"/>
+        <param name="use_imu"           value="$(var smatch_use_imu)"/>
+        <param name="publish_map"       value="true"/>   <!-- node also re-publishes /map for RViz -->
+
+      </node>
+
+      <node pkg="robot_localization" exec="ekf_node" name="ekf_localization" output="screen">
+        <param from="$(find-pkg-share stack_master)/config/ekf_ndt.yaml"/>
         <remap from="odometry/filtered" to="/car_state/odom"/>
       </node>
     </group>
