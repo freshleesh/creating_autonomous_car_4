@@ -31,9 +31,15 @@ icp_localizer:
     voxel_size: 0.05             # scan downsample leaf size [m]
     nn_cell_size: 0.50           # map nearest-neighbour grid cell [m]
     max_correspondence_distance: 2.0   # loose gate at first iteration [m]
-    min_correspondence_distance: 0.15  # tight gate after convergence [m]
+    min_correspondence_distance: 0.05  # tight gate after convergence [m]
     correspondence_decay: 0.85   # multiplier applied to the gate each iteration
     min_correspondence_pairs: 10
     max_iterations: 20
     transform_epsilon: 0.001     # translation convergence [m]
     rotation_epsilon: 0.0001     # rotation convergence [rad]
+
+    # --- point-to-line (PL-ICP) variant ---
+    use_point_to_plane: true    # true: minimize point-to-line (map-normal) residual instead of point-to-point
+    normal_radius: 0.30          # neighbourhood radius for map normal estimation [m]
+    normal_min_neighbors: 6      # min neighbours to accept a normal
+    normal_linearity: 0.30       # max (small/large eigenvalue) ratio for a valid (line-like) normal

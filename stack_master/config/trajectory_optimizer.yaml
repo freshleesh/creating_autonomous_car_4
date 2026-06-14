@@ -3,7 +3,7 @@
     safety_margin:       0.40  # base wall margin [m] — fallback for margin_outer (= safety_margin + 0.15) when margin_outer < 0
     margin_inner:        0.40  # [m] margin to the INSIDE-of-corner wall (apex side). Smaller = tighter apex. 0.30→0.40: keep 10 cm more off the inner wall at apex
     margin_outer:        0.40  # [m] margin to the OUTSIDE-of-corner wall. Set -1.0 to fall back to safety_margin + 0.15
-    v_max:               9.0   # straight speed [m/s]. SOLE straight-speed control now (boost_max=1.0, PP boost off).
+    v_max:               13.0   # straight speed [m/s]. SOLE straight-speed control now (boost_max=1.0, PP boost off).
     a_lat_max:           7.0   # corner speed base [m/s²]. corner cap = √(8.0/κ)·cap_factor (cap_mild/cap_sharp).
     a_long_max:          4.0    # longitudinal accel cap [m/s²]
     target_ds:           0.25   # resampling spacing [m]
@@ -11,6 +11,6 @@
     #   lower a_brake so the slow-down into the next corner starts EARLIER
     #   (braking-zone length ∝ Δv²/a_brake → lower a_brake = longer/earlier zone).
     #   Only bites in real braking zones; open straights stay at full speed.
-    brake_hi_factor:     0.60   # a_brake multiplier at high speed. 1.0=OFF (old behaviour). 0.7=brake even earlier. Raise toward 1.0 if it slows too early.
+    brake_hi_factor:     0.90   # a_brake multiplier at high speed. 1.0=OFF (old behaviour). 0.7=brake even earlier. Raise toward 1.0 if it slows too early.
     brake_hi_v_lo:       0.85   # ×v_max: reduction starts ramping above this planned speed
     brake_hi_v_hi:       1.10   # ×v_max: full reduction at/above this planned speed

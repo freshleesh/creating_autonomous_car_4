@@ -63,7 +63,15 @@ inline std::vector<Eigen::Vector2d> voxelDownsample(
 class NearestGrid
 {
 public:
-  void build(const std::vector<Eigen::Vector2d> & pts, double cell)
+  // with_normals: precompute a per-point surface normal (for point-to-line ICP).
+  //   The map is static, so this one-time cost keeps the per-scan loop cheap.
+  //   A normal is the smallest-eigenvalue eigenvector of the local neighbourhood
+  //   covariance; it is marked invalid where the neighbourhood is too sparse or
+  //   too isotropic (blob, not a line) to give a reliable direction.
+  void build(
+    const std::vector<Eigen::Vector2d> & pts, double cell,
+    bool with_normals = false, double normal_radius = 0.3,
+    int normal_min_neighbors = 6, double normal_linearity = 0.3)
   {
     cell_ = cell;
     inv_ = 1.0 / cell;
@@ -72,6 +80,9 @@ public:
     grid_.reserve(pts.size());
     for (std::size_t idx = 0; idx < pts_.size(); ++idx) {
       grid_[cellOf(pts_[idx], inv_)].push_back(static_cast<int>(idx));
+    }
+    if (with_normals) {
+      computeNormals(normal_radius, normal_min_neighbors, normal_linearity);
     }
   }
 
@@ -102,11 +113,69 @@ public:
   const Eigen::Vector2d & point(int idx) const { return pts_[idx]; }
   bool empty() const { return pts_.empty(); }
 
+  // Per-point surface normal (unit, sign arbitrary). Only valid where
+  // normalValid(idx); call build(..., with_normals=true) first.
+  const Eigen::Vector2d & normal(int idx) const { return normals_[idx]; }
+  bool normalValid(int idx) const
+  {
+    return idx >= 0 && static_cast<std::size_t>(idx) < normal_valid_.size() &&
+           normal_valid_[idx];
+  }
+
 private:
+  // Estimate each point's normal from neighbours within normal_radius via PCA.
+  void computeNormals(double radius, int min_neighbors, double linearity)
+  {
+    normals_.assign(pts_.size(), Eigen::Vector2d::Zero());
+    normal_valid_.assign(pts_.size(), false);
+    const double r2 = radius * radius;
+    const int reach = std::max(1, static_cast<int>(std::ceil(radius * inv_)));
+
+    std::vector<Eigen::Vector2d> nb;
+    for (std::size_t idx = 0; idx < pts_.size(); ++idx) {
+      const Eigen::Vector2d & p = pts_[idx];
+      const int ci = static_cast<int>(std::floor(p.x() * inv_));
+      const int cj = static_cast<int>(std::floor(p.y() * inv_));
+
+      nb.clear();
+      for (int di = -reach; di <= reach; ++di) {
+        for (int dj = -reach; dj <= reach; ++dj) {
+          auto it = grid_.find({ci + di, cj + dj});
+          if (it == grid_.end()) continue;
+          for (int k : it->second) {
+            if ((pts_[k] - p).squaredNorm() <= r2) nb.push_back(pts_[k]);
+          }
+        }
+      }
+      if (static_cast<int>(nb.size()) < min_neighbors) continue;
+
+      Eigen::Vector2d mean = Eigen::Vector2d::Zero();
+      for (const auto & q : nb) mean += q;
+      mean /= static_cast<double>(nb.size());
+
+      Eigen::Matrix2d cov = Eigen::Matrix2d::Zero();
+      for (const auto & q : nb) {
+        const Eigen::Vector2d d = q - mean;
+        cov += d * d.transpose();
+      }
+      cov /= static_cast<double>(nb.size());
+
+      // Eigenvalues ascending: ev(0) across the line (normal), ev(1) along it.
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> es(cov);
+      const Eigen::Vector2d ev = es.eigenvalues();
+      if (ev(1) <= 0.0) continue;
+      if (ev(0) / ev(1) > linearity) continue;  // too isotropic -> ambiguous normal
+      normals_[idx] = es.eigenvectors().col(0).normalized();
+      normal_valid_[idx] = true;
+    }
+  }
+
   double cell_ = 0.5;
   double inv_ = 2.0;
   std::vector<Eigen::Vector2d> pts_;
   std::unordered_map<CellKey, std::vector<int>, CellKeyHash> grid_;
+  std::vector<Eigen::Vector2d> normals_;
+  std::vector<bool> normal_valid_;
 };
 
 // ---------------------------------------------------------------------------

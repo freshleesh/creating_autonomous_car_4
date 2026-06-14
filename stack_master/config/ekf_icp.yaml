@@ -3,8 +3,11 @@ ekf_localization:
     frequency: 100.0
     sensor_timeout: 0.1
     two_d_mode: true
-    publish_tf: false         # gym_bridge already publishes map→base_link; EKF must not compete
+    publish_tf: true          # EKF owns map→base_link (single TF writer); launch sets false in sim (gym_bridge owns it)
 
+    # world_frame=map with odom_frame=base_link makes robot_localization broadcast
+    # map→base_link directly (the odom→base_link lookup is identity), so the TF in
+    # RViz equals the fused /car_state/odom the controller drives on.
     odom_frame:      base_link
     base_link_frame: base_link
     world_frame:     map       # absolute pose in map frame

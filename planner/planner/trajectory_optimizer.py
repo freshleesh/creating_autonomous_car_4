@@ -586,14 +586,14 @@ class TrajectoryOptimizer(Node):
         #       remaining stair-steps so the throttle/brake commands flow
         #       smoothly through the corner.
         v_top      = v_max
-        a_accel    = 2.80 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
-        a_brake    = 0.70* a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
+        a_accel    = 25.80 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
+        a_brake    = 4.50* a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
                                                 #   but physical: braking-zone length = Δv²/(2·a_brake), so a
                                                 #   LOWER a_brake stretches the slow-down EARLIER. The car
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.2                       # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.1                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 
@@ -616,8 +616,8 @@ class TrajectoryOptimizer(Node):
         # hard cap exactly: vx_cap = √(a_lat_max/κ)·cap_factor → √(15/κ) when
         # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
         # no longer re-caps corner speed; the trajectory profile IS the limit now.
-        cap_mild   = 1.50       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
-        cap_sharp  = 1.40       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
+        cap_mild   = 1.70       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
+        cap_sharp  = 1.50       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
@@ -630,8 +630,8 @@ class TrajectoryOptimizer(Node):
         # or we accumulate `lookahead_max` metres. The longer the clear
         # straight ahead, the higher we let v_top go locally.
         kappa_curve_thresh = 0.10       # [1/m] |κ| above this counts as curving
-        lookahead_max      = 12.0       # [m]   look this far ahead to decide
-        boost_max          = 1.25        # straight over-boost OFF → straights = v_max exactly (raise >1 here, PP boost stays off, for long-straight boost).
+        lookahead_max      = 10.0       # [m]   look this far ahead to decide
+        boost_max          = 1.35        # straight over-boost OFF → straights = v_max exactly (raise >1 here, PP boost stays off, for long-straight boost).
         # The old 1.90 pushed the straight target to v_max·1.90 (=15.2 m/s at
         # v_max=8) which is the main reason straights ran "way too fast". With
         # boost_max=1.0 the straight target is exactly v_max — predictable and

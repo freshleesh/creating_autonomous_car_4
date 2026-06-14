@@ -19,12 +19,13 @@
     #   "follow the line loosely" behaviour. We accept a larger cross-track error
     #   in exchange for no weaving.
     # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
-    pp_lookahead_gain: 0.50    # raised: lookahead grows more with speed
+    pp_lookahead_gain: 0.60    # [v16] 0.55→0.60: 전반적으로 한 단계 더 길게 (속도 비례 성장↑)
     pp_lookahead_min:  1.0     # [v11] raised 0.7→1.0: a too-short corner lookahead + real control
                                #   latency = oscillation / can't-follow-line (confirmed by adding
                                #   latency to the sim: short-LA blew CTE to ~1 m, long-LA held ~0.15 m).
                                #   Keep the corner lookahead long enough to be latency-robust.
-    pp_lookahead_max:  3.5     # kept long: at 8 m/s look far ahead on STRAIGHTS → low gain → no oscillation
+    pp_lookahead_max:  5.0     # [v16] 4.5→5.0: 직선 룩어헤드 한 단계 더 길게 (고속 직선 게인↓ → 진동↓)
+                               #   (코너는 kappa shrink로 min쪽으로 줄어 영향 거의 없음)
 
     # Curvature feedforward. PP geometry (target on the curve) ALREADY commands the
     # curve's steering, so any ff>0 double-counts it → over-steer → cuts the inside
@@ -84,11 +85,15 @@
 
     # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
     #   larger = shorter lookahead at corners = tighter tracking but may oscillate
-    pp_kappa_lookahead_gain: 2.5    # [v11] lowered 4.0→2.5: 4.0 shrank the corner lookahead so hard that,
-                                    #   with real control latency, the car oscillated and couldn't hold the
-                                    #   line. 2.5 keeps SOME corner shrink (limits inside-cutting) but stays
-                                    #   long enough to be stable under latency. Mild trade: a little corner
-                                    #   cutting (~0.08 m) for solid, non-oscillating line following.
+    pp_kappa_lookahead_gain: 3.5    # [v15] 2.5→3.5: 데드존이 직선/완만곡선을 보호하므로, shrink를 더 세게
+                                    #   걸어도 직선 룩어헤드는 안 줄고 "진짜 코너"에서만 짧아짐.
+                                    #   (이전 4.0이 오실레이션 낸 건 완만구간까지 같이 줄였기 때문 — 이제 분리됨)
+    # [v15] 곡률 데드존: |κ| < 이 값이면 직선·완만곡선으로 보고 룩어헤드 안 줄임 → 길게 유지.
+    #   이 값 이상(실제 코너)에서만 shrink 작동 → 코너 룩어헤드 짧게.
+    #   pp_straight_kappa=0.1이니 0.20이면 완만한 곡선까지 "길게" 유지됨. 코너를 더 일찍
+    #   짧게 하려면 낮추고(0.12~0.15), 완만곡선도 길게 두려면 올림(0.25).
+    pp_kappa_deadzone: 0.30    # [v16] 0.25→0.30: 데드존 한 단계 더 넓힘 → 약곡선·중코너 룩어헤드 더 길어짐
+                               #   (완만곡선은 그대로 보호, 급코너만 여전히 짧게 유지)
 
     # [removed] pp_a_lat_max / pp_alat_far_factor — the 2-stage kappa corner-speed
     #   cap (√(a_lat/κ)) has been deleted from PP_v6.py. The cornering speed limit

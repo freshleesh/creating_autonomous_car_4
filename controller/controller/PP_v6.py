@@ -59,8 +59,17 @@ PARAMS = {
     'pp_preview_n':       20,
     'pp_preview_blend':   0.6,
     # [v3] Curvature-adaptive lookahead: L_f shrinks at corners even before CTE grows
-    #   L_f = clip(gain * v / (1 + cte_gain*|CTE| + kappa_gain*|kappa|), min, max)
+    #   L_f = clip(gain * v / (1 + cte_gain*|CTE| + kappa_gain*kappa_eff), min, max)
+    #   where kappa_eff = max(0, kappa_corner - kappa_deadzone).
     'pp_kappa_lookahead_gain': 1.5,
+    # [v15] Curvature deadzone for the lookahead shrink. Curvature BELOW this is
+    #   treated as straight/gentle → NO shrink → lookahead stays long (up to max).
+    #   Only curvature ABOVE it shrinks the lookahead → genuine corners get short.
+    #   This decouples the two goals: a single linear kappa_gain shrinks gentle
+    #   curves too; the deadzone protects them so we can raise kappa_gain to make
+    #   real corners short WITHOUT shortening straights/gentle curves. 0.0 = old
+    #   behaviour (shrink from the very first bit of curvature).
+    'pp_kappa_deadzone':  0.0,
     # [removed] 2-stage kappa-based corner speed cap. The cornering speed limit
     #   now lives entirely in the trajectory optimizer (a_lat_max=15, cap_factor=1.0
     #   → vx = √(15/κ)). PP follows the waypoint vx profile and no longer re-caps it.
@@ -135,6 +144,7 @@ class PPNode(Node):
         self.preview_n            = int(p('pp_preview_n'))
         self.preview_blend        = p('pp_preview_blend')
         self.kappa_lookahead_gain = p('pp_kappa_lookahead_gain')
+        self.kappa_deadzone       = p('pp_kappa_deadzone')
         self.alat_near_n          = int(p('pp_alat_near_n'))
         self.Kd_cte               = p('pp_Kd_cte')
         self.alat_behind_n        = int(p('pp_alat_behind_n'))
@@ -240,11 +250,15 @@ class PPNode(Node):
 
         # Adaptive lookahead — shrinks with CTE (recovery) AND upcoming curvature.
         # kappa_corner > 0 BEFORE the car reaches the corner → L_f shrinks early.
+        # [v15] Deadzone: curvature below kappa_deadzone (straights / gentle curves)
+        #   does NOT shrink the lookahead, so it stays long there; only curvature
+        #   above it (real corners) shrinks it short.
+        kappa_eff = max(0.0, kappa_corner - self.kappa_deadzone)
         lookahead = float(np.clip(
             self.lookahead_gain * v / (
                 1.0
                 + self.cte_gain * abs(cte)
-                + self.kappa_lookahead_gain * kappa_corner
+                + self.kappa_lookahead_gain * kappa_eff
             ),
             self.lookahead_min,
             self.lookahead_max,

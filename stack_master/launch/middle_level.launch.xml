@@ -177,20 +177,27 @@
     <let name="smatch_use_imu"    value="false" if="$(var sim)"/>
 
     <!-- KISS-ICP-style Localization -->
+    <!-- No EKF: a relay builds /car_state/odom from pure ICP pose + VESC twist
+         (EKF fusion was lagging behind ICP). The relay also owns the map->base_link
+         TF, so the TF in RViz equals the /car_state/odom the controller drives on.
+         ICP must NOT publish TF (single-writer rule). In sim gym_bridge owns it. -->
     <group if="$(eval '\'$(var localization)\' == \'kiss-icp\'')">
       <node pkg="scan_matching_localization" exec="icp_localizer_node"
             name="icp_localizer" output="screen">
         <param from="$(find-pkg-share stack_master)/config/icp.yaml"/>
-        <param name="publish_tf"        value="$(var smatch_publish_tf)"/>
+        <param name="publish_tf"        value="false"/>  <!-- relay owns map->base_link -->
         <param name="seed_pose_from_tf" value="$(var smatch_seed_tf)"/>
         <param name="use_imu"           value="$(var smatch_use_imu)"/>
         <param name="publish_map"       value="true"/>   <!-- node also re-publishes /map for RViz -->
 
       </node>
 
-      <node pkg="robot_localization" exec="ekf_node" name="ekf_localization" output="screen">
-        <param from="$(find-pkg-share stack_master)/config/ekf_icp.yaml"/>
-        <remap from="odometry/filtered" to="/car_state/odom"/>
+      <!-- ICP pose + VESC twist -> /car_state/odom (+ map->base_link TF). Replaces the EKF. -->
+      <node pkg="stack_master" exec="icp_state_relay.py" name="icp_state_relay" output="screen">
+        <param name="icp_topic"   value="/icp/pose/odom"/>
+        <param name="vesc_topic"  value="/vesc/odom"/>
+        <param name="output_topic" value="/car_state/odom"/>
+        <param name="publish_tf"  value="$(var smatch_publish_tf)"/>  <!-- real HW: relay publishes map->base_link; sim: off (gym_bridge owns it) -->
       </node>
     </group>
 

@@ -39,6 +39,8 @@ install(PROGRAMS
   scripts/map_relay_node.py
   scripts/keyboard_joy_node.py
   scripts/yaw_watch.py
+  scripts/lap_time_manager_node.py
+  scripts/icp_state_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
