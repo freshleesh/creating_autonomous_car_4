@@ -1074,8 +1074,8 @@ class LocalPlanning(Node):
         """
         return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False)
 
-    def _trailing_speed(self, desired_gap: float) -> float:
-        """자차 현재 속도 기준 제곱 감속. desired_gap 이상→vx_max, 15cm 이하→정지."""
+    def _trailing_speed(self, desired_gap: float, quadratic: bool = False) -> float:
+        """Zone1: 선형 감속×0.9, Zone2(quadratic=True): 제곱 감속. 0.6m 이하 완전 정지."""
         if self.track is None:
             return self.vx_max
 
@@ -1086,31 +1086,46 @@ class LocalPlanning(Node):
         if gap <= 0.0 or gap > self.trailing_detect_range:
             return self.vx_max
 
-        # 0.4m 이하 → 무조건 정지
-        if gap <= 0.4:
+        # 0.7m 이하 → 완전 정지
+        if gap <= 0.7:
             return 0.0
 
         if gap >= desired_gap:
             return self.vx_max
 
-        # 자차 현재 속도 기준 제곱 감속 (min 2.0 m/s base → 재출발 가능)
-        base  = max(self.ev, 2.0)
-        ratio = gap / desired_gap
-        v_cmd = base * (ratio ** 2)
-        return float(max(v_cmd, 0.0))
+        if quadratic:
+            # Zone 2 (1.8m 이내): 2.5승 감속 — 가까울수록 강하게 제동
+            base  = max(self.ev, 2.0)
+            ratio = gap / desired_gap
+            return float(max(base * (ratio ** 2.5), 0.0))
+        else:
+            # Zone 1 (3.12m 이내): 선형 감속 × 0.7 — 30% 추가 감속
+            ratio = (gap - 0.7) / (desired_gap - 0.7)
+            return float(self.vx_max * 0.7 * ratio)
 
     def _build_trailing(self):
-        """Zone1 또는 Zone2 안에 상대차 있을 때 gap 비례 속도 제어. 밖: free."""
+        """Zone2 우선(제곱 감속), Zone1(선형×0.9). 밖: free."""
         if self.track is not None:
-            _, _, _, hits = self.track
+            _, _, misses, hits = self.track
             if hits >= self._MIN_HITS and (self._in_zone1() or self._in_zone2()):
-                desired_gap = self._BOX_LEN           # Zone1 반경(3.12m) 기준 거리 유지
-                v_cap = self._trailing_speed(desired_gap)
-                # 저역통과 필터: 진입 시 vx_max에서 출발해 급감속 방지
+                if self._in_zone2():
+                    # Zone 2 (1.8m / ±30°): 제곱 감속으로 강한 속도 제어
+                    v_cap = self._trailing_speed(self._BOX_LEN_WIDE, quadratic=True)
+                else:
+                    # Zone 1 only (3.12m / ±15°): 선형 감속 × 0.9
+                    v_cap = self._trailing_speed(self._BOX_LEN, quadratic=False)
+                # 정지 중 + 3프레임 이상 미감지 → 장애물 소멸로 판단, 즉시 free
+                if v_cap == 0.0 and misses >= 3:
+                    self._v_cap_smooth = None
+                    return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False), 'free'
+                # 단방향 저역통과 필터: 감속 시에만 완만하게, 가속(재출발) 시에는 즉시 반응
                 if self._v_cap_smooth is None:
                     self._v_cap_smooth = self.vx_max
-                self._v_cap_smooth = (self._v_cap_alpha * v_cap
-                                      + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
+                if v_cap < self._v_cap_smooth:
+                    self._v_cap_smooth = (self._v_cap_alpha * v_cap
+                                          + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
+                else:
+                    self._v_cap_smooth = v_cap
                 return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False), 'trailing'
 
         self._v_cap_smooth = None
