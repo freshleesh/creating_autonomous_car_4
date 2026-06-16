@@ -317,7 +317,7 @@ class PPNode(Node):
         ly = math.sin(-yaw) * (gx - p.x) + math.cos(-yaw) * (gy - p.y)
         L_f_sq = lx * lx + ly * ly
         if L_f_sq < 1e-6:
-            return self._prev_steer, max(float(self.waypoints[target_idx].vx_mps), 0.5)
+            return self._prev_steer, max(float(self.waypoints[target_idx].vx_mps), 0.0)
 
         gamma = 2.0 * ly / L_f_sq
         delta = math.atan(self.wheelbase * gamma)
@@ -422,7 +422,7 @@ class PPNode(Node):
             float(self.waypoints[(nearest_idx + i) % N].vx_mps)
             for i in range(0, self.alat_near_n + 1)
         ) * self.v_scale
-        if speed < 0.1:
+        if 0.0 < speed < 0.1:
             speed = 1.0
 
         # preview_indices kept ONLY for the RViz preview highlight (no speed effect).

@@ -512,11 +512,11 @@ class LocalPlanning(Node):
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
-        self._BOX_LEN        = 3.12             # [m] 콘 반경
+        self._BOX_LEN        = 4.0              # [m] 콘 반경
         self._CONE_HALF_DEG  = 15.0             # [deg] 콘 반각 (총 30°)
         self._FAR_CONE_LOOKAHEAD = 0.55         # [m] 긴 콘 yaw 최대 추가 룩어헤드
         # 트리거 콘 2 (Zone 2): 넓고 가까이 — 강한 속도 제어 트리거
-        self._BOX_LEN_WIDE       = 1.8          # [m] 넓은 콘 반경
+        self._BOX_LEN_WIDE       = 2.0          # [m] 넓은 콘 반경
         self._CONE_HALF_DEG_WIDE = 30.0         # [deg] 넓은 콘 반각 (총 60°)
         self._MIN_HITS       = 3                # trailing 발동 최소 연속 감지 횟수
         self._yaw_rate       = 0.0              # [rad/s] odom angular.z
@@ -1086,8 +1086,8 @@ class LocalPlanning(Node):
         if gap <= 0.0 or gap > self.trailing_detect_range:
             return self.vx_max
 
-        # 0.7m 이하 → 완전 정지
-        if gap <= 0.7:
+        # 0.6m 이하 → 완전 정지
+        if gap <= 0.6:
             return 0.0
 
         if gap >= desired_gap:
@@ -1097,31 +1097,34 @@ class LocalPlanning(Node):
             # Zone 2 (1.8m 이내): 2.5승 감속 — 가까울수록 강하게 제동
             base  = max(self.ev, 2.0)
             ratio = gap / desired_gap
-            return float(max(base * (ratio ** 2.5), 0.0))
+            return float(max(base * (ratio ** 4.0), 0.0))
         else:
             # Zone 1 (3.12m 이내): 선형 감속 × 0.7 — 30% 추가 감속
-            ratio = (gap - 0.7) / (desired_gap - 0.7)
-            return float(self.vx_max * 0.7 * ratio)
+            ratio = (gap - 0.6) / (desired_gap - 0.6)
+            return float(self.vx_max * 0.55 * ratio)
 
     def _build_trailing(self):
-        """Zone2 우선(제곱 감속), Zone1(선형×0.9). 밖: free."""
+        """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
         if self.track is not None:
             _, _, misses, hits = self.track
             if hits >= self._MIN_HITS and (self._in_zone1() or self._in_zone2()):
                 if self._in_zone2():
-                    # Zone 2 (1.8m / ±30°): 제곱 감속으로 강한 속도 제어
+                    # Zone 2 (2.0m / ±30°): 4승 감속 — 엄청 강하게 감속, 0.6m에서 정지
                     v_cap = self._trailing_speed(self._BOX_LEN_WIDE, quadratic=True)
                 else:
-                    # Zone 1 only (3.12m / ±15°): 선형 감속 × 0.9
+                    # Zone 1 only (4.0m / ±15°): 선형 감속
                     v_cap = self._trailing_speed(self._BOX_LEN, quadratic=False)
-                # 정지 중 + 3프레임 이상 미감지 → 장애물 소멸로 판단, 즉시 free
-                if v_cap == 0.0 and misses >= 3:
+                restart_misses = 3
+                # 정지 중 + N프레임 이상 미감지 → 장애물 소멸 판단, 재출발
+                if v_cap == 0.0 and misses >= restart_misses:
                     self._v_cap_smooth = None
                     return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False), 'free'
-                # 단방향 저역통과 필터: 감속 시에만 완만하게, 가속(재출발) 시에는 즉시 반응
+                # 단방향 저역통과 필터: 감속 시 완만, 가속 시 즉시, 정지 명령 시 즉시 0
                 if self._v_cap_smooth is None:
                     self._v_cap_smooth = self.vx_max
-                if v_cap < self._v_cap_smooth:
+                if v_cap == 0.0:
+                    self._v_cap_smooth = 0.0  # 정지 명령은 즉시 반영
+                elif v_cap < self._v_cap_smooth:
                     self._v_cap_smooth = (self._v_cap_alpha * v_cap
                                           + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
                 else:
