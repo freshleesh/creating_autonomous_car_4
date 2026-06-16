@@ -512,12 +512,12 @@ class LocalPlanning(Node):
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
-        self._BOX_LEN        = 9.35             # [m] 콘 반경
+        self._BOX_LEN        = 6.0              # [m] 콘 반경
         self._CONE_HALF_DEG  = 15.0             # [deg] 콘 반각 (총 30°)
         self._FAR_CONE_LOOKAHEAD = 0.55         # [m] 긴 콘 yaw 최대 추가 룩어헤드
         # 트리거 콘 2 (Zone 2): 넓고 가까이 — 강한 속도 제어 트리거
-        self._BOX_LEN_WIDE       = 3.0          # [m] 넓은 콘 반경
-        self._CONE_HALF_DEG_WIDE = 25.0         # [deg] 넓은 콘 반각 (총 50°)
+        self._BOX_LEN_WIDE       = 3.7          # [m] 넓은 콘 반경
+        self._CONE_HALF_DEG_WIDE = 30.0         # [deg] 넓은 콘 반각 (총 60°)
         self._MIN_HITS       = 3                # trailing 발동 최소 연속 감지 횟수
         self._yaw_rate       = 0.0              # [rad/s] odom angular.z
 
@@ -1096,12 +1096,18 @@ class LocalPlanning(Node):
         if gap >= desired_gap:
             return self.vx_max
 
-        # P제어 추종: v = 장애물속도 + kp × (gap - 목표거리)
         target_gap = 3.0   # [m] 목표 추종 거리
-        # Zone 1(큰 부채꼴): 감속 완만 / Zone 2(작은 부채꼴): 더 강한 제어
-        kp = 1.2 if not quadratic else 2.5
-        v_cmd = max(opp_v_fwd, 0.0) + kp * (gap - target_gap)
-        return float(max(0.0, min(v_cmd, self.vx_max)))
+
+        # 2.0m 이하 → 완전 정지
+        if gap <= 2.0:
+            return 0.0
+
+        if not quadratic:
+            # Zone 1 (6m / ±15°): vx_max × 0.9
+            return float(self.vx_max * 0.9)
+        else:
+            # Zone 2 (3.7m / ±30°): vx_max × 0.7
+            return float(self.vx_max * 0.7)
 
     def _build_trailing(self):
         """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
