@@ -512,11 +512,11 @@ class LocalPlanning(Node):
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
-        self._BOX_LEN        = 4.0              # [m] 콘 반경
+        self._BOX_LEN        = 5.5              # [m] 콘 반경
         self._CONE_HALF_DEG  = 15.0             # [deg] 콘 반각 (총 30°)
         self._FAR_CONE_LOOKAHEAD = 0.55         # [m] 긴 콘 yaw 최대 추가 룩어헤드
         # 트리거 콘 2 (Zone 2): 넓고 가까이 — 강한 속도 제어 트리거
-        self._BOX_LEN_WIDE       = 2.0          # [m] 넓은 콘 반경
+        self._BOX_LEN_WIDE       = 3.5          # [m] 넓은 콘 반경
         self._CONE_HALF_DEG_WIDE = 30.0         # [deg] 넓은 콘 반각 (총 60°)
         self._MIN_HITS       = 3                # trailing 발동 최소 연속 감지 횟수
         self._yaw_rate       = 0.0              # [rad/s] odom angular.z
@@ -1086,8 +1086,8 @@ class LocalPlanning(Node):
         if gap <= 0.0 or gap > self.trailing_detect_range:
             return self.vx_max
 
-        # 0.6m 이하 → 완전 정지
-        if gap <= 0.6:
+        # 1.8m 이하 → 완전 정지
+        if gap <= 1.8:
             return 0.0
 
         if gap >= desired_gap:
@@ -1100,8 +1100,8 @@ class LocalPlanning(Node):
             return float(max(base * (ratio ** 4.0), 0.0))
         else:
             # Zone 1 (3.12m 이내): 선형 감속 × 0.7 — 30% 추가 감속
-            ratio = (gap - 0.6) / (desired_gap - 0.6)
-            return float(self.vx_max * 0.55 * ratio)
+            ratio = (gap - 1.8) / (desired_gap - 1.8)
+            return float(self.vx_max * 0.8 * ratio)
 
     def _build_trailing(self):
         """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
