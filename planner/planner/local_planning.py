@@ -34,13 +34,13 @@ from scipy.ndimage import binary_dilation
 
 import rclpy
 from rclpy.node import Node
-from ament_index_python.packages import get_package_share_directory
+from planner.map_paths import map_dir as resolve_map_dir
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PointStamped
 from std_msgs.msg import String
 from f110_msgs.msg import Wpnt, WpntArray
 
@@ -383,14 +383,14 @@ class LocalPlanning(Node):
         _default_res, _default_ox, _default_oy = 0.050, 0.0, 0.0
         if _map_name:
             try:
-                _pkg = get_package_share_directory('stack_master')
-                _map_yaml_path = os.path.join(_pkg, 'maps', _map_name, f'{_map_name}.yaml')
+                _md = resolve_map_dir(_map_name, str(gp('maps_dir', '')))
+                _map_yaml_path = os.path.join(_md, f'{_map_name}.yaml')
                 with open(_map_yaml_path) as _f:
                     _mi = _yaml.safe_load(_f)
                 _default_res = float(_mi.get('resolution', 0.050))
                 _default_ox  = float(_mi['origin'][0])
                 _default_oy  = float(_mi['origin'][1])
-                _default_png = os.path.join(_pkg, 'maps', _map_name, f'{_map_name}.png')
+                _default_png = os.path.join(_md, f'{_map_name}.png')
             except Exception as _e:
                 self.get_logger().warn(f'PNG wall mask load failed: {_e}')
         self._wall_png  = str(gp('map_png', _default_png))
@@ -432,6 +432,9 @@ class LocalPlanning(Node):
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
         self.track_pub  = self.create_publisher(MarkerArray, '/local_planning/tracking', 10)
         self.mode_pub   = self.create_publisher(String,      '/local_planning/mode', 1)
+        # Tracked opponent centre (map frame) for the localizer's dynamic-object
+        # filter. Published only when a confident track exists; absence = none.
+        self.opp_pub    = self.create_publisher(PointStamped, '/local_planning/opponent', 10)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
         self._BOX_LEN        = 8.0              # [m] 콘 반경
@@ -599,6 +602,16 @@ class LocalPlanning(Node):
             if in_bounds and self._wall_mask_large is not None and self._wall_mask_large[row, col]:
                 if misses > 5 and self._avoid_state is None:
                     self.track = None
+
+        # Publish the tracked opponent centre (map frame) for the localizer's
+        # dynamic-object filter, only once the track is confident.
+        if self.track is not None and self.track[3] >= self._MIN_HITS:
+            ps = PointStamped()
+            ps.header.frame_id = 'map'
+            ps.header.stamp = self.get_clock().now().to_msg()
+            ps.point.x = float(self.track[0][0])
+            ps.point.y = float(self.track[0][1])
+            self.opp_pub.publish(ps)
 
         # 동적/정적 분류: closing speed 우선 → hits 기반 fallback
         if self.track is not None:

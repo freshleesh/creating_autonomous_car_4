@@ -31,6 +31,11 @@ public:
     rot_eps_ = declare_parameter<double>("rotation_epsilon", 1e-4);
     min_corr_pairs_ = declare_parameter<int>("min_correspondence_pairs", 10);
 
+    // Fixed distance for the post-registration fitness check (NOT the adaptive
+    // corr gate). A scan point counts as an inlier only if it lands this close to
+    // a map point at the final pose — the honest measure of match quality.
+    fitness_inlier_dist_ = declare_parameter<double>("fitness_inlier_dist", 0.10);
+
     // Point-to-line (PL-ICP) variant: minimize the residual along the map normal
     // instead of point-to-point. Faster/sharper on walls; falls back to
     // point-to-point per correspondence where the map normal is unreliable.
@@ -50,7 +55,11 @@ protected:
 
   Pose2D align(const Points & scan_base, const Pose2D & init) override
   {
-    if (grid_.empty()) return init;
+    if (grid_.empty()) {
+      last_inlier_ratio_ = 0.0;  // no map -> unusable fit, gate falls back to prediction
+      last_mean_resid_ = fitness_inlier_dist_;
+      return init;
+    }
     const Points src = voxelDownsample(scan_base, voxel_size_);
 
     Pose2D T = init;
@@ -86,7 +95,8 @@ protected:
         mu_q += qp;
       }
 
-      if (static_cast<int>(P.size()) < min_corr_pairs_) break;
+      last_correspondences_ = static_cast<int>(P.size());
+      if (last_correspondences_ < min_corr_pairs_) break;
 
       const double n = static_cast<double>(P.size());
       mu_p /= n;
@@ -119,7 +129,37 @@ protected:
       const double dtrans = std::hypot(T.x - Told.x, T.y - Told.y);
       if (dtrans < trans_eps_ && std::abs(dtheta) < rot_eps_) break;
     }
+    evaluateFit(src, T);
     return T;
+  }
+
+  // Post-registration fitness at the final pose, evaluated at a FIXED tight
+  // distance. Fills last_inlier_ratio_ / last_mean_resid_ (base-class health
+  // signals). Independent of the adaptive corr gate, so a loosely-gated high
+  // correspondence count cannot mask a bad alignment.
+  void evaluateFit(const Points & src, const Pose2D & T)
+  {
+    if (src.empty()) {
+      last_inlier_ratio_ = 0.0;
+      last_mean_resid_ = fitness_inlier_dist_;
+      return;
+    }
+    const double c = std::cos(T.theta), s = std::sin(T.theta);
+    int inliers = 0;
+    double sum_d2 = 0.0;
+    for (const auto & sp : src) {
+      const Eigen::Vector2d wp(
+        T.x + c * sp.x() - s * sp.y(),
+        T.y + s * sp.x() + c * sp.y());
+      double d2;
+      if (grid_.nearest(wp, fitness_inlier_dist_, d2) < 0) continue;
+      ++inliers;
+      sum_d2 += d2;
+    }
+    last_inlier_ratio_ = static_cast<double>(inliers) / static_cast<double>(src.size());
+    last_mean_resid_ = inliers > 0
+      ? std::sqrt(sum_d2 / static_cast<double>(inliers))
+      : fitness_inlier_dist_;
   }
 
   // One Gauss-Newton step minimizing the point-to-line residual e = n^T (p - q)
@@ -163,6 +203,7 @@ protected:
       }
     }
 
+    last_correspondences_ = pairs;
     if (pairs < min_corr_pairs_) return true;
 
     H.diagonal().array() += 1e-9;  // keep H invertible when weakly constrained
@@ -183,6 +224,7 @@ private:
   double trans_eps_;
   double rot_eps_;
   int min_corr_pairs_;
+  double fitness_inlier_dist_;
   bool use_point_to_plane_;
   double normal_radius_;
   int normal_min_neighbors_;

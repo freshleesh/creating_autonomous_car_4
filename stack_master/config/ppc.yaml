@@ -7,9 +7,11 @@
     pp_speed_boost:    1.0     # PP straight boost OFF — straight speed managed only in trajectory (v_max)
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
-    pp_v_max_boost:    11.5    # [user] raised 9.0→11.5: profile now plans up to ~10.5 m/s on long straights
-                               #   (v_max=9.5 × boost_max=1.35). 9.0 was clipping it. Ceiling = a touch above
-                               #   the planned max so PP follows the profile instead of capping it.
+    pp_v_max_boost:    25.0    # [v21] 13.0→25.0 [user]: PP 직선속도 캡 사실상 해제(>v_max=23).
+                               #   이제 PP는 직선속도를 안 자름 → 차는 프로파일 v_max=23 / VESC erpm
+                               #   캡까지 달림. 진짜 천장 = VESC speed_max=140000 erpm = 140000/7382.4
+                               #   ≈ 18.96 m/s planned ≈ 실제 11.8 m/s. 더 올리려면 v_max 또는
+                               #   vehicle_config.speed_max(erpm)를 올려야 함. ⚠️ 고속 안정성/제동거리 주의.
 
     # [v8] CALM tuning. Priority is now STABILITY over tracking accuracy: the car
     #   was darting off the line at speed and then OSCILLATING trying to recover.
@@ -19,13 +21,20 @@
     #   "follow the line loosely" behaviour. We accept a larger cross-track error
     #   in exchange for no weaving.
     # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
-    pp_lookahead_gain: 0.60    # [v16] 0.55→0.60: 전반적으로 한 단계 더 길게 (속도 비례 성장↑)
-    pp_lookahead_min:  1.0     # [v11] raised 0.7→1.0: a too-short corner lookahead + real control
-                               #   latency = oscillation / can't-follow-line (confirmed by adding
-                               #   latency to the sim: short-LA blew CTE to ~1 m, long-LA held ~0.15 m).
-                               #   Keep the corner lookahead long enough to be latency-robust.
-    pp_lookahead_max:  5.0     # [v16] 4.5→5.0: 직선 룩어헤드 한 단계 더 길게 (고속 직선 게인↓ → 진동↓)
-                               #   (코너는 kappa shrink로 min쪽으로 줄어 영향 거의 없음)
+    pp_lookahead_gain: 0.60    # [best 19.64s] 0.65→0.60 복원: 전반적 룩어헤드 게인.
+                               # [v18] 0.65→0.60 복귀: gain은 곡률 무관 속도항이라 완만+중코너를
+                               #   둘 다 늘림 → 중코너 복귀 요청에 따라 원복. 완만곡선은 max(아래)만으로 유지.
+    pp_lookahead_min:  1.0     # [best 19.64s] 0.8→1.0 복원: 급커브 바닥 룩어헤드.
+                               # [v19] 1.0→0.8 [user]: 중코너·급커브 룩어헤드를 더 짧게(타이트 추종).
+                               #   주의: min은 floor에 "닿는" 구간(주로 급커브·저속)만 줄임. 중코너는
+                               #   보통 floor 위라 kappa_lookahead_gain↑와 같이 가야 실제로 줄어듦.
+                               #   [v11] 0.7→1.0 올렸던 이유: 너무 짧은 코너 룩어헤드 + 제어 latency =
+                               #   진동/라인 못따라감(sim 확인: short-LA CTE~1 m, long-LA~0.15 m).
+                               #   0.8은 그 절충 — 코너에서 진동/못따라가면 0.9~1.0으로 되돌릴 것.
+    pp_lookahead_max:  5.0     # [best 19.64s] 6.0→5.0 복원: 직선 룩어헤드 천장.
+                               # [v23] 10.0→5.0 [user] 되돌림: 직선·빠른 완만 룩어헤드 천장 다시 5.0.
+                               #   v≥8.33 planned이면 여기 걸림(0.60·8.33=5.0).
+                               #   (v22에서 10.0까지 늘렸던 걸 원복)
 
     # Curvature feedforward. PP geometry (target on the curve) ALREADY commands the
     # curve's steering, so any ff>0 double-counts it → over-steer → cuts the inside
@@ -55,7 +64,8 @@
     #   when the car genuinely understeers. So treat as experimental: if the car
     #   starts cutting corners or twitching, set this back to 0.0. The heading
     #   feedback above already gives most of the anticipation more safely.
-    pp_us_ff_gain:     0.0   # [user] 안쪽 보정 약하게 ON: delta += gain * v^2 * kappa.
+    pp_us_ff_gain:     0.0   # [user] OFF (0.002→0.0): 안쪽 보정 끔. delta += gain*v^2*kappa 비활성.
+                             # [user] 안쪽 보정 약하게 ON: delta += gain * v^2 * kappa.
                                #   고속+급커브일수록 안쪽으로 더 조향(언더스티어 상쇄). 진동/코너컷 생기면
                                #   0.008 → 0.0 로 낮출 것. (이전엔 0.0=OFF, 고속코너 불안정 원인이었음)
     # [user] Corner-ENTRY 안쪽 보정. 곡률이 "갑자기" 커지는 진입 구간에서만 작동
@@ -67,6 +77,13 @@
     pp_entry_ff_v_min:      3.0    # [m/s] 이 속도 이상에서만 작동 (느리면 언더스티어 없음)
     pp_entry_ff_max:        0.50   # [rad] 추가 안쪽 조향 상한 (~3°). "미세하게" 유지
     pp_Kd_cte:         0.0    # 진동 시 dcte/dt도 진동 → 증폭 방지
+
+    # [v25] 룩어헤드 각도(α) PD. α = 차 헤딩벡터와 룩어헤드 포인트 벡터 사이 각도(atan2(ly,lx)).
+    #   PP 기하가 이미 α에 비례 조향하므로 P는 "추가 게인"(룩어헤드 길이와 무관), D는 dα/dt 감쇠로
+    #   라인 수렴 시 오버슈트/위빙 억제. I=0(기하각에 적분은 와인드업). 부호는 PP와 동일(강화).
+    #   ⚠️ P는 PP와 중복이라 크면 진동 재발 → 작게 시작. 진동 시 K_alpha 낮출 것. rate limiter가 최종 완충.
+    pp_K_alpha:        0.00   # α P게인 [rad조향/rad]. 라인추종 강화. 0=OFF
+    pp_Kd_alpha:       0.00   # α D게인 (dα/dt 감쇠). ≈0.1·K_alpha (굉장히 작게)
 
     # [v6] Target-heading feedback. PP geometry already aims at target_idx, so this
     #   double-steers toward the forward (inside) heading. Code comment recommends 0;
@@ -81,19 +98,30 @@
     pp_preview_blend:  0.6     # 0.0 = target speed only, 1.0 = preview min only
     # [v14] NEAR hard-cap window. Was code-default 15 (≈3.75 m). Lower → the hard
     #   corner-speed cap commits closer to the corner → braking starts LATER.
-    pp_alat_near_n:    10      # ≈2.5 m
+    pp_alat_near_n:    10      # ≈2.5 m  (코너 진입 감속 윈도우 — 직선판정과 분리됨)
+    # [v20] 직선 부스트 "판정" 전방 윈도우 (코드에서 alat_near_n과 분리). 이만큼 앞이
+    #   직선이어야 긴직선으로 보고 부스트 → 짧을수록 더 짧은 직선도 부스트 걸림.
+    #   10→6 (2.5m→1.5m): 직선 판별 거리 단축 [user]. 감속(alat_near_n)은 그대로.
+    pp_straight_detect_n: 6    # ≈1.5 m
 
     # [v3] Curvature-adaptive lookahead — shrinks L_f at corners even before CTE grows
     #   larger = shorter lookahead at corners = tighter tracking but may oscillate
-    pp_kappa_lookahead_gain: 3.5    # [v15] 2.5→3.5: 데드존이 직선/완만곡선을 보호하므로, shrink를 더 세게
+    pp_kappa_lookahead_gain: 3.5    # [best 19.64s] 5.0→3.5 복원: 코너 룩어헤드 shrink 게인.
+                                    #   min(0.8)은 floor 닿는 급커브만 줄이므로, floor 위인 중코너는
+                                    #   이 gain으로 줄임 (κ≈0.45·v≈5 기준 L_f 약 2.0→1.7).
+                                    #   [v15] 2.5→3.5: 데드존이 직선/완만곡선을 보호하므로, shrink를 더 세게
                                     #   걸어도 직선 룩어헤드는 안 줄고 "진짜 코너"에서만 짧아짐.
-                                    #   (이전 4.0이 오실레이션 낸 건 완만구간까지 같이 줄였기 때문 — 이제 분리됨)
+                                    #   (이전 4.0이 오실레이션 낸 건 완만구간까지 같이 줄였기 때문 — 이제 분리됨.
+                                    #   5.0이 중코너에서 진동/twitchy면 4.0~4.5로 낮출 것)
     # [v15] 곡률 데드존: |κ| < 이 값이면 직선·완만곡선으로 보고 룩어헤드 안 줄임 → 길게 유지.
     #   이 값 이상(실제 코너)에서만 shrink 작동 → 코너 룩어헤드 짧게.
     #   pp_straight_kappa=0.1이니 0.20이면 완만한 곡선까지 "길게" 유지됨. 코너를 더 일찍
     #   짧게 하려면 낮추고(0.12~0.15), 완만곡선도 길게 두려면 올림(0.25).
-    pp_kappa_deadzone: 0.30    # [v16] 0.25→0.30: 데드존 한 단계 더 넓힘 → 약곡선·중코너 룩어헤드 더 길어짐
-                               #   (완만곡선은 그대로 보호, 급코너만 여전히 짧게 유지)
+    pp_kappa_deadzone: 0.30    # [best 19.64s] 0.18→0.30 복원: shrink 데드존(약곡선 보호 폭).
+                               # [v24] 0.15→0.25 [user]: 0.15는 완만-중 경계·중코너를 과하게 줄여서 조금 올림.
+                               #   이 값 미만(직선~완만)은 shrink 안 함(길게), 이상만 shrink(짧게).
+                               #   κ 0.25 이상부터 shrink → 완만-중 경계·중코너가 v23보다 길어짐.
+                               #   (v22 0.40=너무 김, v23 0.15=너무 짧음 → 0.25 중간. 더 길면 0.30)
 
     # [removed] pp_a_lat_max / pp_alat_far_factor — the 2-stage kappa corner-speed
     #   cap (√(a_lat/κ)) has been deleted from PP_v6.py. The cornering speed limit
@@ -111,3 +139,24 @@
     #   (a_lat_max=15, cap_factor=1.0), so PP follows the profile as-is instead of
     #   scaling it down. Lower this again only if the car runs wide/hits walls.
     pp_v_scale: 1.0
+
+    # [v17] Startup speed cap. 차가 완전히 멈추거나 아주 느려졌다가 다시 출발할 때,
+    #   보통 라인에서 살짝 벗어난 상태인데 궤적 vx 프로파일이 곧바로 최대속도를 명령해서
+    #   (벗어난 채 고속 추종) 불안정해짐. 출발 후 몇 초간 속도 상한을 걸고, 그 상한을
+    #   startup_speed_max → startup_v_full 로 startup_cap_dur 동안 선형으로 풀어줘서
+    #   먼저 라인에 안착한 뒤 프로파일 속도로 부드럽게 복귀. 램프가 끝나면 영향 없음.
+    # [v21] 제한 더 세게 [user]: ramp 상한을 v_max_boost(25, 캡해제됨)에서 startup_v_full로
+    #   분리. 이전엔 v_max_boost=25라 ramp가 2.5→25로 가팔라져 출발 0.5초만에 캡이 풀려버림.
+    #   이제 2.0→8.0을 3초에 걸쳐 천천히 풀어줌(=실제 출발 더 느리고 길게 제한).
+    pp_startup_cap_enable: true   # false 면 기능 OFF
+    # [v22] 0.8→0.3: 디텍션/트레일링 감속으로 거의 0이 됐다가 다시 출발할 때도 캡이 걸려
+    #   "천천히 출발"이 적용되게. PP_v6가 출발 첫 사이클부터 캡을 거는 구조(별도 if)라
+    #   풀스피드 럭치 없이 v≈0부터 부드럽게 나감.
+    #   ⚠️ 데드락 주의: 캡이 임계값 아래에서도 걸리므로, 캡 출발속도(speed_max=2.0 →
+    #   발행 ÷1.8 ≈ 1.1 → 실제 ~0.7 m/s)보다 이 값이 반드시 낮아야 함(0.3 ⪡ 0.7). 0.7
+    #   근처로 올리면 차가 임계값을 못 넘어 영구 저속(안 감)이 됨 — 어제 1.2로 올렸다 막힘.
+    pp_startup_v_stopped:  0.3    # [m/s] 이 속도 미만 = 정지/거의정지 → 다음 출발에 캡 재무장
+    pp_startup_speed_max:  2.0    # [v21] 2.5→2.0: 출발 순간 속도 상한 더 낮춤 (불안정하면 ↓, 굼뜨면 ↑)
+    pp_startup_cap_dur:    3.0    # [v21] 2.0→3.0: 제한 거는 시간 늘림 (더 오래 천천히 풀림)
+    pp_startup_v_full:     8.0    # [v21] ramp 끝 속도 상한(이후 해제). 낮출수록 더 세게 제한.
+                                  #   주의: 해제 시 프로파일 속도(~18.96)로 점프하므로 너무 낮추면 단차 큼

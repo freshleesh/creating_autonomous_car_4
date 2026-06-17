@@ -9,7 +9,9 @@
   <arg name="use_estop"      default="false"               description="Use emergency stop (true) or not (false)"/>
 
   <!-- Config / path helpers -->
-  <let name="maps_dir"                value="$(find-pkg-share stack_master)/maps"/>
+  <!-- Maps are read from the SOURCE tree (same path as maps_save_dir) so the
+       map server, cartographer .pbstream and gym all read the live src copy. -->
+  <let name="maps_dir"                value="$(find-pkg-prefix stack_master)/../../src/creating_autonomous_car/stack_master/maps"/>
   <let name="map_path"                value="$(var maps_dir)/$(var map)/$(var map)"/>
   <let name="cartographer_config_dir" value="$(find-pkg-share stack_master)/config"/>
   <let name="maps_save_dir"           value="$(find-pkg-prefix stack_master)/../../src/creating_autonomous_car/stack_master/maps/$(var map)"/>

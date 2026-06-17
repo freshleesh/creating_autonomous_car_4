@@ -53,10 +53,11 @@ class DynamicObstaclePublisher(Node):
         self.max_amplitude_limit = 0.5  # Max lateral offset in meters
         self.prev_d_perturbation = 0.0
 
-        # ===== Map directory (source path via realpath) =====
-        # __file__: .../creating_autonomous_car/simulator/obstacle_publisher/obstacle_publisher/dynamic_obstacle_publisher.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # ===== Map directory (SOURCE tree, build-mode independent) =====
+        # Resolve from the install prefix the same way the launch files / planner
+        # nodes do, so maps are read from src without an install copy. Falls back
+        # to the install share dir when no source checkout is present.
+        self.map_dir = self._resolve_map_dir(self.map_name)
 
         # ===== Obstacle state =====
         self.current_s = self.starting_s
@@ -85,6 +86,24 @@ class DynamicObstaclePublisher(Node):
         self.get_logger().info(f'  - Update rate: {self.update_rate}Hz')
         self.get_logger().info(f'  - Reactive mode: {self.reactive}')
         self.get_logger().info(f'  - Publishing state to /dynamic_obstacle_state')
+
+    @staticmethod
+    def _resolve_map_dir(map_name):
+        """SOURCE-tree map folder, resolved from the install prefix (build-mode
+        independent), with a fallback to the install share dir."""
+        from ament_index_python.packages import (
+            get_package_prefix, get_package_share_directory)
+        try:
+            prefix = get_package_prefix('stack_master')   # .../install/stack_master
+            src = os.path.normpath(os.path.join(
+                prefix, os.pardir, os.pardir,
+                'src', 'creating_autonomous_car', 'stack_master', 'maps', map_name))
+            if os.path.isdir(src):
+                return src
+        except Exception:
+            pass
+        return os.path.join(
+            get_package_share_directory('stack_master'), 'maps', map_name)
 
     def load_trajectory_from_csv(self):
         """Load centerline from CSV"""

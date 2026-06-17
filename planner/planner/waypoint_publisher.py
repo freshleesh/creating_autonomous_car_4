@@ -26,8 +26,8 @@ import numpy as np
 import csv
 import os
 
-from ament_index_python.packages import get_package_share_directory
 from planner.track_bounds import TrackBounds
+from planner.map_paths import map_dir as resolve_map_dir
 
 
 class WaypointPublisher(Node):
@@ -36,14 +36,15 @@ class WaypointPublisher(Node):
         super().__init__('waypoint_publisher')
 
         self.declare_parameter('map_name', '')
+        self.declare_parameter('maps_dir', '')   # optional override; default = source tree
         self.map_name = self.get_parameter('map_name').value
 
         if not self.map_name:
             self.get_logger().error('[WaypointPublisher] map_name parameter is required!')
             return
 
-        self.map_dir = os.path.join(
-            get_package_share_directory('stack_master'), 'maps', self.map_name)
+        self.map_dir = resolve_map_dir(
+            self.map_name, self.get_parameter('maps_dir').value)
         self.get_logger().info(f'[WaypointPublisher] map_dir: {self.map_dir}')
 
         # Load track boundaries for d_right/d_left computation

@@ -58,12 +58,14 @@
   <group if="$(var sim)">
     <node pkg="controller" exec="pp_v6_node" name="pp" output="screen">
       <param from="$(var config)"/>
+      <param name="mode" value="$(var mode)"/>
       <remap from="/global_waypoints" to="/local_waypoints"/>
     </node>
   </group>
   <group unless="$(var sim)">
     <node pkg="controller" exec="pp_v6_node" name="pp" output="screen">
       <param from="$(var config)"/>
+      <param name="mode" value="$(var mode)"/>
       <remap from="/global_waypoints" to="/local_waypoints"/>
       <remap from="/vesc/odom" to="/car_state/odom"/>
     </node>

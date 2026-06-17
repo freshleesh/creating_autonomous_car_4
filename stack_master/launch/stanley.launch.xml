@@ -5,7 +5,8 @@
 
   <!-- ========== SIMULATOR (sim=true only) ========== -->
   <group if="$(var sim)">
-    <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
+    <!-- Maps are read from the SOURCE tree so edits/new maps need no rebuild copy. -->
+    <let name="maps_dir" value="$(find-pkg-prefix stack_master)/../../src/creating_autonomous_car/stack_master/maps"/>
     <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
 
     <!-- f1tenth gym bridge: virtual /scan + /car_state/odom + TF -->

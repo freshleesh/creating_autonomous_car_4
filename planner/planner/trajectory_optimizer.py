@@ -32,6 +32,8 @@ class TrajectoryOptimizer(Node):
         self.declare_parameter('brake_hi_factor', 0.80)  # a_brake multiplier at high speed (1.0=off, lower=brake earlier)
         self.declare_parameter('brake_hi_v_lo',   0.85)  # ×v_max: reduction starts ramping above this planned speed
         self.declare_parameter('brake_hi_v_hi',   1.10)  # ×v_max: full reduction at/above this planned speed
+        self.declare_parameter('visualize', True)        # save an _optimized.png of the result
+        self.declare_parameter('show_plot', True)        # also pop up the plot window (blocks until closed)
 
         map_name      = self.get_parameter('map_name').value
         input_csv     = self.get_parameter('input_csv').value
@@ -53,9 +55,10 @@ class TrajectoryOptimizer(Node):
             self.get_logger().error('[TrajectoryOptimizer] map_name parameter is required!')
             return
 
-        # ---- I/O paths ---------------------------------------------------
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        map_dir  = os.path.join(pkg_root, 'stack_master', 'maps', map_name)
+        # ---- I/O paths (SOURCE tree, build-mode independent; see map_paths) ---
+        from planner.map_paths import map_dir as resolve_map_dir
+        self.declare_parameter('maps_dir', '')   # optional override
+        map_dir  = resolve_map_dir(map_name, self.get_parameter('maps_dir').value)
         in_path  = os.path.join(map_dir, input_csv)
         out_path = os.path.join(map_dir, output_csv)
 
@@ -85,6 +88,7 @@ class TrajectoryOptimizer(Node):
             brake_hi_factor=brake_hi_factor,
             brake_hi_v_lo=brake_hi_v_lo,
             brake_hi_v_hi=brake_hi_v_hi,
+            log=self.get_logger().info,
         )
 
         self._save_global_waypoints(out_path, x_opt, y_opt, w_r_new, w_l_new, psi, kappa, vx)
@@ -94,6 +98,14 @@ class TrajectoryOptimizer(Node):
             f'|kappa|max={np.max(np.abs(kappa)):.3f})'
         )
 
+        # ---- Visualize the optimized result -----------------------------
+        if self.get_parameter('visualize').value:
+            png_path = os.path.join(map_dir, output_csv.replace('.csv', '_optimized.png'))
+            self._visualize_result(
+                x_opt, y_opt, psi, kappa, vx, w_r_new, w_l_new,
+                v_max, png_path,
+                show=self.get_parameter('show_plot').value)
+
     # ======================================================================
     #                       STUDENT IMPLEMENTATION
     # ======================================================================
@@ -101,7 +113,8 @@ class TrajectoryOptimizer(Node):
     def _optimize(x_c, y_c, w_r, w_l,
                   safety_margin, margin_inner, margin_outer,
                   v_max, a_lat_max, a_long_max, target_ds,
-                  brake_hi_factor=1.0, brake_hi_v_lo=0.85, brake_hi_v_hi=1.10):
+                  brake_hi_factor=1.0, brake_hi_v_lo=0.85, brake_hi_v_hi=1.10,
+                  log=None):
         """
         Minimum-curvature trajectory optimization.
 
@@ -161,10 +174,19 @@ class TrajectoryOptimizer(Node):
         # └─ Step 9. compute remaining clearance to the original walls (w_r_new, w_l_new)
         #             and return it together with the optimized line.
 
+        # Step logger (no-op if the caller passed none). Lets this static method
+        # narrate each stage without holding a node reference.
+        _log = log if log is not None else (lambda *a, **k: None)
+
         # --- Step 1. uniform resample of the centerline --------------------
         x_r, y_r, w_r_r, w_l_r = TrajectoryOptimizer._resample_uniform(
             x_c, y_c, w_r, w_l, target_ds)
         N = len(x_r)
+        _len = float(np.sum(np.hypot(np.roll(x_r, -1) - x_r, np.roll(y_r, -1) - y_r)))
+        _log(f'  [1] resampled centerline: {len(x_c)} -> {N} pts @ ds={target_ds} m '
+             f'(track length ~{_len:.1f} m)')
+        _log(f'  [2] width budget: w_right={w_r_r.min():.2f}-{w_r_r.max():.2f} m, '
+             f'w_left={w_l_r.min():.2f}-{w_l_r.max():.2f} m')
 
         # --- Step 2. helper: unit (left-pointing) normal at any line -------
         def _normals(xs, ys):
@@ -404,6 +426,8 @@ class TrajectoryOptimizer(Node):
         # Identity for box-constraint matrix (reused every osqp solve).
         I_sparse = sparse.eye(N, format='csc')
 
+        _log(f'  [3/4] min-curvature QP: {N_ITERS_RACE} race + {N_ITERS_POLISH} polish '
+             f'iters on {N} vars (osqp)')
         race_converged = False
         for it in range(N_ITERS_RACE + N_ITERS_POLISH):
             in_polishing = (it >= N_ITERS_RACE) or race_converged
@@ -547,9 +571,15 @@ class TrajectoryOptimizer(Node):
             ys = ys + da * ny_
             a_total = a_total + da
 
+            _phase = 'polish' if in_polishing else 'race'
+            _status = res.info.status if res.info.status_val in (1, 2) else f'FAIL({res.info.status})'
+            _log(f'      iter {it:2d} [{_phase:6s}] max|da|={np.max(np.abs(da)):.2e} m  '
+                 f'offset|max|={np.max(np.abs(a_total)):.3f} m  osqp={_status}')
+
             # If a racing pass converges, flip into polishing for the rest.
             if (not in_polishing) and np.max(np.abs(da)) < 5e-4:
                 race_converged = True
+                _log(f'      race converged at iter {it} -> entering polish phase')
 
             # If a racing pass converges, flip into the polishing phase for
             # the remaining iterations. Polishing passes never break early —
@@ -568,9 +598,13 @@ class TrajectoryOptimizer(Node):
         # carried along so the remaining wall clearance stays consistent.
         x_opt, y_opt, a, w_r_r, w_l_r = TrajectoryOptimizer._resample_closed(
             xs, ys, target_ds, a_total, w_r_r, w_l_r)
+        _log(f'  [5/6] recovered + cubic-resampled racing line: {len(x_opt)} pts, '
+             f'lateral offset max={np.max(np.abs(a)):.3f} m')
 
         # --- Step 7. heading & curvature -----------------------------------
         psi, kappa = TrajectoryOptimizer._geom(x_opt, y_opt)
+        _log(f'  [7] geometry: |kappa|max={np.max(np.abs(kappa)):.3f} 1/m '
+             f'(R_min={1.0/max(np.max(np.abs(kappa)),1e-6):.2f} m)')
 
         # --- Step 8. speed profile (smooth braking + post-corner hold) -----
         # Pipeline:
@@ -587,13 +621,13 @@ class TrajectoryOptimizer(Node):
         #       smoothly through the corner.
         v_top      = v_max
         a_accel    = 25.80 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
-        a_brake    = 4.50* a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
+        a_brake    = 3.80 * a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
                                                 #   but physical: braking-zone length = Δv²/(2·a_brake), so a
                                                 #   LOWER a_brake stretches the slow-down EARLIER. The car
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.1                       # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.2                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 
@@ -616,8 +650,8 @@ class TrajectoryOptimizer(Node):
         # hard cap exactly: vx_cap = √(a_lat_max/κ)·cap_factor → √(15/κ) when
         # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
         # no longer re-caps corner speed; the trajectory profile IS the limit now.
-        cap_mild   = 1.70       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
-        cap_sharp  = 1.50       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
+        cap_mild   = 1.55       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
+        cap_sharp  = 1.40       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
@@ -631,7 +665,7 @@ class TrajectoryOptimizer(Node):
         # straight ahead, the higher we let v_top go locally.
         kappa_curve_thresh = 0.10       # [1/m] |κ| above this counts as curving
         lookahead_max      = 10.0       # [m]   look this far ahead to decide
-        boost_max          = 1.35        # straight over-boost OFF → straights = v_max exactly (raise >1 here, PP boost stays off, for long-straight boost).
+        boost_max          = 1.45        # straight over-boost OFF → straights = v_max exactly (raise >1 here, PP boost stays off, for long-straight boost).
         # The old 1.90 pushed the straight target to v_max·1.90 (=15.2 m/s at
         # v_max=8) which is the main reason straights ran "way too fast". With
         # boost_max=1.0 the straight target is exactly v_max — predictable and
@@ -739,9 +773,14 @@ class TrajectoryOptimizer(Node):
                 if vx[j] > v_cap:
                     vx[j] = v_cap
 
+        _log(f'  [8] speed profile: v={vx.min():.2f}-{vx.max():.2f} m/s '
+             f'(mean {vx.mean():.2f}), v_max cap={v_max:.1f}, a_lat={a_lat_max:.1f}')
+
         # --- Step 9. remaining wall clearance ------------------------------
         w_r_new = w_r_r + a
         w_l_new = w_l_r - a
+        _log(f'  [9] wall clearance after shift: right_min={w_r_new.min():.2f} m, '
+             f'left_min={w_l_new.min():.2f} m')
 
         return x_opt, y_opt, psi, kappa, vx, w_r_new, w_l_new
 
@@ -840,6 +879,80 @@ class TrajectoryOptimizer(Node):
                 v_cap = np.sqrt(v[i] ** 2 + 2.0 * a_long_max * ds[i])
                 v[j] = min(v[j], v_cap)
         return v
+
+    def _visualize_result(self, x, y, psi, kappa, vx, w_r, w_l, v_max, png_path, show=True):
+        """Plot the optimized racing line so create_path is not a black box.
+
+        Left  : track walls (reconstructed from psi + clearances) with the racing
+                line coloured by target speed; start point + direction marked.
+        Right : speed and |curvature| vs arc length — where it brakes and why.
+        Saved to PNG always; also shown if `show` (blocks until the window closes).
+        """
+        try:
+            import matplotlib
+            if not show:                       # headless: never try to open a window
+                matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.collections import LineCollection
+        except Exception as e:
+            self.get_logger().warn(f'[TrajectoryOptimizer] viz skipped (matplotlib: {e})')
+            return
+
+        # Reconstruct the wall polylines from the racing line + clearances.
+        # left normal = (-sin psi, cos psi); left wall is +w_l along it, right -w_r.
+        nlx, nly = -np.sin(psi), np.cos(psi)
+        lx, ly = x + w_l * nlx, y + w_l * nly
+        rx, ry = x - w_r * nlx, y - w_r * nly
+
+        # closed arc length for the profile plot
+        ds = np.hypot(np.roll(x, -1) - x, np.roll(y, -1) - y)
+        s = np.concatenate(([0.0], np.cumsum(ds)[:-1]))
+
+        fig, (ax_map, ax_prof) = plt.subplots(
+            1, 2, figsize=(16, 7), gridspec_kw={'width_ratios': [1.3, 1.0]})
+
+        # --- left: track map + speed-coloured racing line ---
+        ax_map.plot(np.append(lx, lx[0]), np.append(ly, ly[0]), 'k-', lw=1.0, label='walls')
+        ax_map.plot(np.append(rx, rx[0]), np.append(ry, ry[0]), 'k-', lw=1.0)
+        pts = np.array([x, y]).T.reshape(-1, 1, 2)
+        segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+        lc = LineCollection(segs, cmap='turbo', linewidth=3.5)
+        lc.set_array(vx[:-1])
+        lc.set_clim(vx.min(), vx.max())
+        ax_map.add_collection(lc)
+        ax_map.scatter([x[0]], [y[0]], c='lime', s=120, ec='k', zorder=5, label='start')
+        ax_map.annotate('', xy=(x[3], y[3]), xytext=(x[0], y[0]),
+                        arrowprops=dict(arrowstyle='->', color='lime', lw=2))
+        cb = fig.colorbar(lc, ax=ax_map, fraction=0.046, pad=0.04)
+        cb.set_label('target speed [m/s]')
+        ax_map.set_aspect('equal'); ax_map.set_title('Optimized racing line (speed)')
+        ax_map.set_xlabel('x [m]'); ax_map.set_ylabel('y [m]')
+        ax_map.legend(loc='upper right'); ax_map.grid(True, alpha=0.3)
+
+        # --- right: speed + curvature vs arc length ---
+        ax_prof.plot(s, vx, color='tab:red', lw=1.8, label='speed [m/s]')
+        ax_prof.axhline(v_max, color='tab:red', ls=':', alpha=0.6, label=f'v_max={v_max:.1f}')
+        ax_prof.set_xlabel('arc length s [m]'); ax_prof.set_ylabel('speed [m/s]', color='tab:red')
+        ax_prof.tick_params(axis='y', labelcolor='tab:red')
+        ax_prof.grid(True, alpha=0.3)
+        ax_k = ax_prof.twinx()
+        ax_k.plot(s, np.abs(kappa), color='tab:blue', lw=1.0, alpha=0.7, label='|kappa| [1/m]')
+        ax_k.set_ylabel('|curvature| [1/m]', color='tab:blue')
+        ax_k.tick_params(axis='y', labelcolor='tab:blue')
+        ax_prof.set_title('Speed & curvature profile')
+
+        lap_t = float(np.sum(ds / np.maximum(vx, 0.1)))
+        fig.suptitle(f'{png_path.split("/")[-2]} | {len(x)} pts | '
+                     f'v {vx.min():.1f}-{vx.max():.1f} m/s | '
+                     f'|kappa|max {np.max(np.abs(kappa)):.3f} | est lap ~{lap_t:.1f} s',
+                     fontsize=13)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.savefig(png_path, dpi=130)
+        self.get_logger().info(f'[TrajectoryOptimizer] result figure saved -> {png_path} '
+                               f'(est lap time ~{lap_t:.1f} s)')
+        if show:
+            plt.show()
+        plt.close(fig)
 
     @staticmethod
     def _save_global_waypoints(path, x, y, w_r, w_l, psi, kappa, vx):

@@ -43,7 +43,8 @@
   <group if="$(var sim)">
     <arg name="map"                     description="Map name (required when sim=true)"/>
 
-    <let name="maps_dir" value="$(find-pkg-share stack_master)/maps"/>
+    <!-- Maps are read from the SOURCE tree so edits/new maps need no rebuild copy. -->
+    <let name="maps_dir" value="$(find-pkg-prefix stack_master)/../../src/creating_autonomous_car/stack_master/maps"/>
     <let name="map_path" value="$(var maps_dir)/$(var map)/$(var map)"/>
     <include file="$(find-pkg-share f1tenth_gym_ros)/launch/gym_bridge_launch.py">
       <arg name="map_yaml_path"  value="$(var map_path).yaml"/>

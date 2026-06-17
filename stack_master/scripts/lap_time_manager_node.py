@@ -20,7 +20,9 @@
   ~/lap_time   (std_msgs/Float32)  방금 끝난 lap 의 소요 시간 [s]
   ~/best_lap   (std_msgs/Float32)  현재까지 최단 lap [s]
   ~/lap_count  (std_msgs/Int32)    완료한 lap 수
-  ~/markers    (visualization_msgs/MarkerArray)  RViz 용 라인 + 텍스트
+  ~/current_lap_path   (nav_msgs/Path)  현재 주행 중인 바퀴 경로
+  ~/previous_lap_path  (nav_msgs/Path)  직전 완주 바퀴 경로 (latched)
+  ~/markers    (visualization_msgs/MarkerArray)  RViz 용 라인 + 텍스트 + 경로
 """
 
 import math
@@ -28,11 +30,13 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
+from rclpy.qos import QoSProfile, DurabilityPolicy
 
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseWithCovarianceStamped, Point, PoseStamped
 from std_msgs.msg import Float32, Int32
 from visualization_msgs.msg import Marker, MarkerArray
+from ackermann_msgs.msg import AckermannDriveStamped
 
 
 def yaw_from_quat(q) -> float:
@@ -49,6 +53,9 @@ class LapTimeManager(Node):
         # --- topics / frames ---
         self.odom_topic = self.declare_parameter('odom_topic', '/car_state/odom').value
         self.map_frame = self.declare_parameter('map_frame', 'map').value
+        # 컨트롤러 드라이브 명령(steer 읽기용).
+        self.drive_topic = self.declare_parameter(
+            'drive_topic', '/vesc/high_level/ackermann_cmd').value
 
         # --- start/finish line ---
         # start_x 가 유한하지 않으면 첫 odom 에서 자동 캡처한다.
@@ -73,6 +80,9 @@ class LapTimeManager(Node):
         # 현재 바퀴 주행 경로를 Path 로 발행. 점 간 최소 간격으로 다운샘플.
         self.path_min_dist = self.declare_parameter('path_min_dist', 0.03).value   # [m] 작을수록 촘촘
         self.path_line_width = self.declare_parameter('path_line_width', 0.15).value  # [m] LINE_STRIP 두께
+        # 직전 바퀴 경로 발행 여부 + 마커 두께.
+        self.publish_prev_path = self.declare_parameter('publish_prev_path', True).value
+        self.prev_path_line_width = self.declare_parameter('prev_path_line_width', 0.1).value  # [m]
 
         self.have_line = False
         self._init_line_from_params()
@@ -84,16 +94,22 @@ class LapTimeManager(Node):
         self.lap_count = 0
         self.best_lap = None
         self.last_lap = None  # 직전(이전) lap 시간 [s]
+        self.cur_speed = 0.0  # 현재 속도 [m/s] (odom twist)
+        self.cur_steer = 0.0  # 현재 조향각 [rad] (드라이브 명령)
 
         # 현재 바퀴 경로 (map 프레임). 새 lap 마다 초기화.
         self.path = Path()
         self.path.header.frame_id = self.map_frame
         self._last_path_xy = None
+        # 직전 완주 바퀴 경로 (완주 시점에 현재 경로를 스냅샷). None 이면 아직 없음.
+        self.prev_path = None
 
         self.line_marker_cached = None
 
         # I/O
         self.sub = self.create_subscription(Odometry, self.odom_topic, self.odom_cb, 10)
+        self.create_subscription(
+            AckermannDriveStamped, self.drive_topic, self.drive_cb, 10)
         if self.reset_on_initpose:
             self.create_subscription(
                 PoseWithCovarianceStamped, '/initialpose', self.initpose_cb, 10)
@@ -103,6 +119,13 @@ class LapTimeManager(Node):
         self.pub_count = self.create_publisher(Int32, '~/lap_count', 10)
         self.pub_marker = self.create_publisher(MarkerArray, '~/markers', 1)
         self.pub_path = self.create_publisher(Path, '~/current_lap_path', 10)
+        # 직전 바퀴 경로는 완주 때 한 번만 갱신되므로 latched(transient_local)로 발행해
+        # RViz 가 늦게 구독해도 마지막 경로를 받도록 한다.
+        latched_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.pub_prev_path = self.create_publisher(
+            Path, '~/previous_lap_path', latched_qos)
+        self.pub_speed = self.create_publisher(Float32, '~/speed', 10)  # [m/s]
+        self.pub_steer = self.create_publisher(Float32, '~/steer', 10)  # [rad]
 
         # 마커는 주기적으로(2Hz) 갱신 발행
         self.create_timer(0.5, self.publish_markers)
@@ -134,9 +157,16 @@ class LapTimeManager(Node):
         return Time.from_msg(stamp).nanoseconds * 1e-9
 
     # -------------------------------------------------------------- callbacks
+    def drive_cb(self, msg: AckermannDriveStamped):
+        self.cur_steer = msg.drive.steering_angle
+        self.pub_steer.publish(Float32(data=float(self.cur_steer)))
+
     def odom_cb(self, msg: Odometry):
         px = msg.pose.pose.position.x
         py = msg.pose.pose.position.y
+
+        self.cur_speed = msg.twist.twist.linear.x
+        self.pub_speed.publish(Float32(data=float(self.cur_speed)))
 
         t = self._stamp_sec(msg.header.stamp)
 
@@ -206,6 +236,8 @@ class LapTimeManager(Node):
         self.pub_best.publish(Float32(data=float(self.best_lap)))
         self.pub_count.publish(Int32(data=int(self.lap_count)))
 
+        # 방금 끝난 바퀴 경로를 직전 경로로 스냅샷 후 발행, 그다음 현재 경로 초기화.
+        self._snapshot_prev_path()
         self._reset_path()  # 다음 바퀴 경로 새로 시작
 
     def initpose_cb(self, _msg: PoseWithCovarianceStamped):
@@ -216,12 +248,26 @@ class LapTimeManager(Node):
         self.best_lap = None
         self.last_lap = None
         self._reset_path()
+        self.prev_path = None
+        if self.publish_prev_path:
+            self.pub_prev_path.publish(Path(header=self.path.header))  # 빈 경로로 클리어
         self.get_logger().info('/initialpose 수신 — lap 카운트 초기화')
 
     # ------------------------------------------------------------------ path
     def _reset_path(self):
         self.path.poses = []
         self._last_path_xy = None
+
+    def _snapshot_prev_path(self):
+        # 방금 끝난 바퀴 경로를 복사해 직전 경로로 보관하고 latched 토픽으로 발행.
+        if not self.publish_prev_path or not self.path.poses:
+            return
+        prev = Path()
+        prev.header.frame_id = self.map_frame
+        prev.header.stamp = self.path.header.stamp
+        prev.poses = list(self.path.poses)  # 새 lap 의 reset 이 영향 주지 않게 얕은 복사
+        self.prev_path = prev
+        self.pub_prev_path.publish(prev)
 
     def _update_path(self, px, py, msg: Odometry):
         # 직전 점에서 path_min_dist 이상 움직였을 때만 점 추가(다운샘플).
@@ -255,11 +301,30 @@ class LapTimeManager(Node):
         m.points = [p.pose.position for p in self.path.poses]
         self.pub_marker.publish(MarkerArray(markers=[m]))
 
+    def _prev_path_marker(self, stamp):
+        # 직전 바퀴 경로를 파랑 LINE_STRIP 으로. (현재 경로=초록, 라인=노랑과 구분)
+        m = Marker()
+        m.header.frame_id = self.map_frame
+        m.header.stamp = stamp
+        m.ns = 'prev_lap_path'
+        m.id = 3
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = self.prev_path_line_width
+        m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.4, 1.0, 1.0
+        m.points = [p.pose.position for p in self.prev_path.poses]
+        return m
+
     # ----------------------------------------------------------------- markers
     def publish_markers(self):
         if not self.have_line:
             return
         arr = MarkerArray()
+
+        # 직전 바퀴 경로 마커는 정적이라 2Hz 타이머에서 함께 재발행한다.
+        if self.publish_prev_path and self.prev_path is not None:
+            arr.markers.append(
+                self._prev_path_marker(self.get_clock().now().to_msg()))
 
         line = Marker()
         line.header.frame_id = self.map_frame
@@ -290,7 +355,9 @@ class LapTimeManager(Node):
         text.color.r, text.color.g, text.color.b, text.color.a = 1.0, 1.0, 1.0, 1.0
         last = '-' if self.last_lap is None else f'{self.last_lap:.2f}s'
         best = '-' if self.best_lap is None else f'{self.best_lap:.2f}s'
-        text.text = f'laps: {self.lap_count}  last: {last}  best: {best}'
+        text.text = (
+            f'laps: {self.lap_count}  last: {last}  best: {best}\n'
+            f'v: {self.cur_speed:.2f} m/s  steer: {math.degrees(self.cur_steer):+.1f} deg')
         arr.markers.append(text)
 
         self.pub_marker.publish(arr)

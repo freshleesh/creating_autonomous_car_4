@@ -18,25 +18,47 @@ icp_localizer:
     map_out_topic: '/map'  # topic to re-publish the map on
 
     # --- motion model ---
-    use_imu: true                # heading prediction from IMU gyro (else odom yaw)
+    use_odom: true              # translation prediction from /vesc/odom (the
+                                 # original behavior). Set false to instead
+                                 # dead-reckon translation from the IMU accel
+                                 # between scans (pure LiDAR + IMU).
+    use_imu: true                # heading prediction from IMU gyro (else CV yaw)
     imu_yaw_scale: 1.0           # set -1.0 if the gyro z-axis sign is inverted
 
     # --- scan filtering ---
     min_range: 0.1
     max_range: 15.0
     occupancy_threshold: 65      # OccupancyGrid value treated as "occupied"
-    min_scan_points: 30
+    min_scan_points: 1500
 
     # --- ICP registration ---
-    voxel_size: 0.05             # scan downsample leaf size [m]
+    voxel_size: 0.03             # scan downsample leaf size [m]
     nn_cell_size: 0.50           # map nearest-neighbour grid cell [m]
     max_correspondence_distance: 2.0   # loose gate at first iteration [m]
-    min_correspondence_distance: 0.05  # tight gate after convergence [m]
+    min_correspondence_distance: 0.03  # tight gate after convergence [m]
     correspondence_decay: 0.85   # multiplier applied to the gate each iteration
     min_correspondence_pairs: 10
-    max_iterations: 20
+    max_iterations: 15
     transform_epsilon: 0.001     # translation convergence [m]
     rotation_epsilon: 0.0001     # rotation convergence [rad]
+
+    # --- fitness gate: trust the ICP pose only when the match is actually good ---
+    # Evaluated at the final pose against a FIXED tight distance, so it reflects
+    # match QUALITY (unlike the correspondence count, which stays high even when
+    # mislocalized). If the fit fails, the node coasts on the motion prediction.
+    fitness_gate_enable: true
+    fitness_inlier_dist: 0.05       # [m] scan point counts as inlier if within this of a map point
+    fitness_min_inlier_ratio: 0.50  # accept only if >= this fraction of points are inliers
+    fitness_max_resid: 0.12         # [m] accept only if RMS inlier residual <= this
+
+    # --- dynamic-object filtering (perception-guided) ---
+    # Remove scan points around the local_planner's tracked opponent before
+    # registration, so a moving car can't bias the scan-to-static-map match.
+    # true/false swaps it against the original (unfiltered) localization.
+    use_dynamic_filter: true        # false = original behaviour
+    dynamic_filter_radius: 0.60      # [m] drop scan points within this of the opponent
+    dynamic_filter_timeout: 0.30     # [s] ignore detections older than this (then keep all points)
+    dynamic_obstacle_topic: /local_planning/opponent
 
     # --- point-to-line (PL-ICP) variant ---
     use_point_to_plane: true    # true: minimize point-to-line (map-normal) residual instead of point-to-point

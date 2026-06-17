@@ -36,8 +36,10 @@ vesc/**:
     position_min: 0.0
     servo_max: 1.0
     servo_min: 0.0
-    speed_max: 46140.0    # 10 m/s 허용 (10 × 4614 erpm/(m/s))
-    speed_min: -46140.0
+    speed_max: 140000.0   # [user] 46140→140000: 기존 캡이 실게인(7382.4) 기준 6.25 m/s에서 잘려
+                          #   직선속도를 막고 있었음. 140000/7382.4 ≈ 명령 19 m/s(실제 ÷1.6 ≈ 11.8 m/s)까지 허용.
+                          #   ⚠️ 모터 안전 상한 — 벤치에서 과회전 여부 확인 권장.
+    speed_min: -140000.0
     speed_to_erpm_gain: 7382.4
     speed_to_erpm_offset: 0.0
     steering_angle_to_servo_gain: -1.2 #-1.2135

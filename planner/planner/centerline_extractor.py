@@ -36,19 +36,23 @@ class CenterlineExtractor(Node):
         self.declare_parameter('map_name', '')
         self.declare_parameter('reverse', False)
         self.declare_parameter('output_csv', 'centerline.csv')
+        self.declare_parameter('visualize', True)   # save a debug PNG of the extraction
+        self.declare_parameter('show_plot', True)    # also pop up the window (blocks until closed)
 
         self.map_name = self.get_parameter('map_name').value
         self.reverse = self.get_parameter('reverse').value
         self.output_csv = self.get_parameter('output_csv').value
+        self.visualize_on = self.get_parameter('visualize').value
+        self.show_plot = self.get_parameter('show_plot').value
 
         if not self.map_name:
             self.get_logger().error('map_name parameter is required!')
             return
 
-        # Resolve source map directory from __file__ (realpath resolves symlinks)
-        # __file__: .../creating_autonomous_car/planner/planner/centerline_extractor.py
-        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-        self.map_dir = os.path.join(pkg_root, 'stack_master', 'maps', self.map_name)
+        # Resolve the SOURCE map directory (build-mode independent). See map_paths.
+        from planner.map_paths import map_dir as resolve_map_dir
+        self.declare_parameter('maps_dir', '')   # optional override
+        self.map_dir = resolve_map_dir(self.map_name, self.get_parameter('maps_dir').value)
         self.get_logger().info(f'[CenterlineExtractor] map_dir: {self.map_dir}')
 
         # Publishers (TRANSIENT_LOCAL for latched behavior)
@@ -183,9 +187,10 @@ class CenterlineExtractor(Node):
         self.centerline_pub.publish(self._centerline_markers)
         self.track_bounds_pub.publish(self._track_bounds_markers)
 
-        # 14. Matplotlib visualization
-        self._visualize(opening, skeleton, centerline_smooth,
-                        centerline_meter, bound_right_m, bound_left_m)
+        # 14. Matplotlib visualization (debug PNG + optional window)
+        if self.visualize_on:
+            self._visualize(opening, skeleton, centerline_smooth,
+                            centerline_meter, bound_right_m, bound_left_m)
 
         return True
 
@@ -461,7 +466,12 @@ class CenterlineExtractor(Node):
 
     def _visualize(self, opening, skeleton, centerline_cells,
                    centerline_meter, bound_right, bound_left):
-        """Matplotlib visualization (UNICORN debug style)."""
+        """Matplotlib visualization (UNICORN debug style). Saves a PNG always;
+        only opens a blocking window when show_plot is set (so it stays usable
+        over SSH / headless launches)."""
+        if not self.show_plot:
+            import matplotlib
+            matplotlib.use('Agg')
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
         # 1. Opening + skeleton overlay
@@ -515,7 +525,12 @@ class CenterlineExtractor(Node):
         plt.suptitle(f'Map: {self.map_name} | Points: {len(centerline_meter)} | '
                      f'Direction: {"CW" if self.reverse else "CCW"}')
         plt.tight_layout()
-        plt.show()
+        png_path = os.path.join(self.map_dir, 'centerline_debug.png')
+        fig.savefig(png_path, dpi=120)
+        self.get_logger().info(f'[CenterlineExtractor] debug figure saved -> {png_path}')
+        if self.show_plot:
+            plt.show()
+        plt.close(fig)
 
     def _republish(self):
         """Re-publish markers periodically for late subscribers."""

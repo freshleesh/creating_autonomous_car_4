@@ -7,7 +7,10 @@ from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped
 from copy import deepcopy
 
-from controller.estop import EStop
+# NOTE: EStop lives in the `controller` package and is imported lazily inside
+# __init__ only when use_estop is set. A top-level import made the whole joy→
+# vesc bridge die with ModuleNotFoundError when `controller` wasn't sourced,
+# even though manual/auto teleop never needs EStop.
 
 
 class SimpleMuxNode(Node):
@@ -60,6 +63,7 @@ class SimpleMuxNode(Node):
         self.create_subscription(AckermannDriveStamped, in_topic,  self._drive_cb, 10)
         self.create_subscription(Joy,                   joy_topic, self._joy_cb,   10)
         if self.use_estop:
+            from controller.estop import EStop   # lazy: only needed with estop
             self.estop = EStop(self)
 
             self.create_subscription(LaserScan, scan_topic, self._scan_cb, 10)

@@ -106,6 +106,17 @@ PARAMS = {
     #   in the CTE correction. No effect above v_track_min, so cornering is unchanged.
     'pp_v_track_min':       1.5,   # [m/s] speed at which full control authority is reached
     'pp_startup_lookahead': 1.8,   # [m] lookahead floor at standstill
+    # [v17] Startup speed cap. After a stop/crawl the car is usually a bit off the
+    #   line; the vx profile would immediately command top speed (high-speed tracking
+    #   while off-line → unstable). Cap speed for a few seconds after launch, ramping
+    #   the cap startup_speed_max → startup_v_full over startup_cap_dur, so the car
+    #   settles onto the line first, then releases. No effect once the ramp finishes.
+    'pp_startup_cap_enable': True,  # False = feature OFF
+    'pp_startup_v_stopped':  0.3,   # [m/s] below this = (near-)stopped → re-arm cap. MUST stay below
+                                    #   the capped launch speed (~0.7 m/s) or the cap traps the car. See _compute.
+    'pp_startup_speed_max':  2.0,   # [m/s] speed cap at the instant of launch
+    'pp_startup_cap_dur':    3.0,   # [s] duration over which the cap ramps up and releases
+    'pp_startup_v_full':     8.0,   # [m/s] cap value at end of ramp (released after)
 }
 
 
@@ -155,6 +166,11 @@ class PPNode(Node):
         self.v_scale              = p('pp_v_scale')
         self.v_track_min          = p('pp_v_track_min')
         self.startup_lookahead    = p('pp_startup_lookahead')
+        self.startup_cap_enable   = p('pp_startup_cap_enable')
+        self.startup_v_stopped    = p('pp_startup_v_stopped')
+        self.startup_speed_max    = p('pp_startup_speed_max')
+        self.startup_cap_dur      = p('pp_startup_cap_dur')
+        self.startup_v_full       = p('pp_startup_v_full')
 
         self.scan      = None
         self.odom      = None
@@ -162,6 +178,7 @@ class PPNode(Node):
 
         self._prev_steer = 0.0          # [v3] for steering rate limiter
         self._prev_cte   = None         # [v6] None = skip D term on first call
+        self._startup_timer = 0.0       # [v17] startup speed-cap countdown [s]
         self._dt = 1.0 / p('control_rate_hz')
 
         latched = QoSProfile(
@@ -444,6 +461,39 @@ class PPNode(Node):
                 and max_kappa_near < self.straight_kappa
                 and kappa_max_behind < self.straight_kappa):
             speed = min(speed * self.speed_boost, self.v_max_boost)
+
+        # [v17] Startup speed cap. While stopped/crawling, (re)arm the cap so it fires
+        #   on the NEXT launch. Once moving, ramp the cap from startup_speed_max up to
+        #   startup_v_full over startup_cap_dur, then release. Applied LAST so it caps the
+        #   boosted speed too. Lets the car settle back onto the line before going fast.
+        #   [v21] ramp top = startup_v_full (NOT v_max_boost, which is now 25 = disabled).
+        if self.startup_cap_enable:
+            # [v22] Ease in gently from a (near-)stop — INCLUDING detection slowdowns.
+            #   The detection / local-planner trailing slowdown reaches PP only as low
+            #   /local_waypoints vx (and thus odom v dropping); PP has no separate stop
+            #   signal. Any dip below startup_v_stopped (re)arms the cap, and the cap is
+            #   applied from the FIRST re-acceleration cycle — a SEPARATE `if`, not the
+            #   old `elif` — so there is NO full-speed lurch on restart. The launch is
+            #   gentle from v≈0, exactly like a manual launch from rest.
+            #
+            #   ⚠️ DEADLOCK CONSTRAINT (this is what broke it before): since the cap is
+            #   applied even while v < startup_v_stopped, the capped launch speed MUST be
+            #   able to push the car back ABOVE startup_v_stopped — otherwise v never
+            #   crosses the threshold, the timer never counts down, and the car is
+            #   trapped crawling. startup_speed_max=2.0 → published /1.8 ≈ 1.1 → ~0.7 m/s
+            #   on the real car (VESC gain), so startup_v_stopped is kept at 0.3, well
+            #   below that. DO NOT raise startup_v_stopped near/above the capped launch
+            #   speed, and if you raise startup_speed_max you may raise it proportionally.
+            if v < self.startup_v_stopped:
+                self._startup_timer = self.startup_cap_dur          # arm / hold while (near-)stopped
+            if self._startup_timer > 0.0:
+                frac = 1.0 - self._startup_timer / max(self.startup_cap_dur, 1e-3)
+                cap  = self.startup_speed_max + frac * (self.startup_v_full - self.startup_speed_max)
+                speed = min(speed, cap)
+                # Count the ramp down only once actually moving (v above the hold band),
+                #   so the 3 s measures launch time, not time spent waiting at a stop.
+                if v >= self.startup_v_stopped:
+                    self._startup_timer = max(0.0, self._startup_timer - self._dt)
 
         self._publish_viz(p, yaw, lookahead, nearest_idx, target_idx, cte, speed, preview_indices)
         return delta, speed
