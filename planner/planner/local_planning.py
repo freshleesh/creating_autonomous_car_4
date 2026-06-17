@@ -66,7 +66,7 @@ def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
     x = np.where(valid, ranges * np.cos(angles), np.nan)
     y = np.where(valid, ranges * np.sin(angles), np.nan)
     return x, y
- 
+
 
  
 # ===========================================================================
@@ -76,7 +76,6 @@ def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
 
 def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
 
-    
     # --- tunable parameters ---
     lambda_rad = math.radians(30.0)
     sigma      = 0.3   # 클수록 멀리떨어진 점들이 더 클러스터링 잘되게
@@ -206,11 +205,6 @@ def l_shape_fitting(clusters):
 
 
 
-
-
-
-
-
 def tracking(obstacles, track, dt: float, ego, max_misses: int = 15):
     # --- tunable parameters ---
     opp_max_lat     = 5       # 좌우 트래킹 범위
@@ -293,7 +287,7 @@ def tracking(obstacles, track, dt: float, ego, max_misses: int = 15):
 
 
 # ===========================================================================
-#  GEOMETRY HELPER (provided)
+#  GEOMETRY HELPER
 # ===========================================================================
 def geom_psi_kappa(x: np.ndarray, y: np.ndarray):
     """Heading & signed curvature of a non-closed (x, y) sequence."""
@@ -440,12 +434,12 @@ class LocalPlanning(Node):
         self.mode_pub   = self.create_publisher(String,      '/local_planning/mode', 1)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
-        self._BOX_LEN        = 7.0              # [m] 콘 반경
-        self._CONE_HALF_DEG  = 15.0             # [deg] 콘 반각 (총 30°)
+        self._BOX_LEN        = 8.0              # [m] 콘 반경
+        self._CONE_HALF_DEG  = 12.0             # [deg] 콘 반각 (총 24°)
         self._FAR_CONE_LOOKAHEAD = 0.55         # [m] 긴 콘 yaw 최대 추가 룩어헤드
         # 트리거 콘 2 (Zone 2): 넓고 가까이 — 강한 속도 제어 트리거
-        self._BOX_LEN_WIDE       = 3.5          # [m] 넓은 콘 반경
-        self._CONE_HALF_DEG_WIDE = 25.0         # [deg] 넓은 콘 반각 (총 50°)
+        self._BOX_LEN_WIDE       = 5.0          # [m] 넓은 콘 반경
+        self._CONE_HALF_DEG_WIDE = 18.0         # [deg] 넓은 콘 반각 (총 36°)
         self._MIN_HITS       = 3                # trailing 발동 최소 연속 감지 횟수
         self._yaw_rate       = 0.0              # [rad/s] odom angular.z
 
@@ -678,19 +672,17 @@ class LocalPlanning(Node):
         self.det_pub.publish(ma)
 
     def _cone_yaw(self) -> float:
-        """가까운(넓은) 콘 방향: 0.8m 앞 레이스라인 heading."""
+        """가까운(넓은) 콘 방향: 속도 비례 lookahead로 코너 진입 전 미리 방향 잡음."""
         if self._sx is not None and self.s_total > 0.0:
-            psi, _ = self._psi_kappa_at(self.ego_s + 0.8)
+            lookahead = max(1.0, self.ev * 0.201)
+            psi, _ = self._psi_kappa_at(self.ego_s + lookahead)
             return psi
         return self.eyaw
 
     def _cone_yaw_far(self) -> float:
-        """긴(좁은) 콘 방향: 소곡률에서 민감하게, 대곡률에서 포화하도록 sqrt 스케일링."""
+        """긴(좁은) 콘 방향: 속도 비례 lookahead로 코너 진입 전 미리 방향 잡음."""
         if self._sx is not None and self.s_total > 0.0:
-            _, kappa = self._psi_kappa_at(self.ego_s)
-            kappa_ref = 0.18  # [rad/m] 이 값에서 최대 룩어헤드 도달
-            t = min(abs(kappa) / kappa_ref, 1.0) ** 0.5  # concave: 소곡률 민감·대곡률 포화
-            lookahead = 0.8 + self._FAR_CONE_LOOKAHEAD * t
+            lookahead = max(1.0, self.ev * 0.7025)
             psi, _ = self._psi_kappa_at(self.ego_s + lookahead)
             return psi
         return self.eyaw
@@ -702,21 +694,27 @@ class LocalPlanning(Node):
         lat_limit = max(fwd * math.tan(math.radians(half_deg)), near_half)
         return abs(lat) <= lat_limit
 
+    def _ego_ref(self):
+        """트리거존 기준점: 자차 중심에서 0.15m 앞."""
+        d = 0.0
+        return self.ex + d * math.cos(self.eyaw), self.ey + d * math.sin(self.eyaw)
+
     def _is_in_trigger_box(self) -> bool:
         """두 부채꼴(직선용·코너용) 중 하나에 들어오면 True."""
         if self.track is None:
             return False
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        rx, ry = self._ego_ref()
 
         cone_yaw_far = self._cone_yaw_far()
         cf, sf = math.cos(cone_yaw_far), math.sin(cone_yaw_far)
-        fwd_far = cf * (ox - self.ex) + sf * (oy - self.ey)
-        lat_far = -sf * (ox - self.ex) + cf * (oy - self.ey)
+        fwd_far = cf * (ox - rx) + sf * (oy - ry)
+        lat_far = -sf * (ox - rx) + cf * (oy - ry)
 
         cone_yaw = self._cone_yaw()
         cn, sn = math.cos(cone_yaw), math.sin(cone_yaw)
-        fwd_near = cn * (ox - self.ex) + sn * (oy - self.ey)
-        lat_near = -sn * (ox - self.ex) + cn * (oy - self.ey)
+        fwd_near = cn * (ox - rx) + sn * (oy - ry)
+        lat_near = -sn * (ox - rx) + cn * (oy - ry)
 
         return (self._in_cone(fwd_far,  lat_far,  self._CONE_HALF_DEG,      self._BOX_LEN) or
                 self._in_cone(fwd_near, lat_near, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE))
@@ -726,10 +724,11 @@ class LocalPlanning(Node):
         if self.track is None:
             return False
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        rx, ry = self._ego_ref()
         cone_yaw = self._cone_yaw_far()
         cf, sf = math.cos(cone_yaw), math.sin(cone_yaw)
-        fwd = cf * (ox - self.ex) + sf * (oy - self.ey)
-        lat = -sf * (ox - self.ex) + cf * (oy - self.ey)
+        fwd = cf * (ox - rx) + sf * (oy - ry)
+        lat = -sf * (ox - rx) + cf * (oy - ry)
         return self._in_cone(fwd, lat, self._CONE_HALF_DEG, self._BOX_LEN)
 
     def _in_zone2(self) -> bool:
@@ -737,10 +736,11 @@ class LocalPlanning(Node):
         if self.track is None:
             return False
         ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        rx, ry = self._ego_ref()
         cone_yaw = self._cone_yaw()
         cn, sn = math.cos(cone_yaw), math.sin(cone_yaw)
-        fwd = cn * (ox - self.ex) + sn * (oy - self.ey)
-        lat = -sn * (ox - self.ex) + cn * (oy - self.ey)
+        fwd = cn * (ox - rx) + sn * (oy - ry)
+        lat = -sn * (ox - rx) + cn * (oy - ry)
         return self._in_cone(fwd, lat, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE)
 
     def _make_cone_marker(self, mid: int, half_deg: float, radius: float,
@@ -756,13 +756,14 @@ class LocalPlanning(Node):
         N = 24
         half_rad = math.radians(half_deg)
         sc = math.cos(cone_yaw); ss = math.sin(cone_yaw)
+        rx, ry = self._ego_ref()
         for i in range(N):
             t1 = i / N; t2 = (i + 1) / N
-            pn1 = Point(); pn1.x = self.ex + (near_half - 2.0*near_half*t1)*ss; pn1.y = self.ey - (near_half - 2.0*near_half*t1)*sc; pn1.z = 0.05
-            pn2 = Point(); pn2.x = self.ex + (near_half - 2.0*near_half*t2)*ss; pn2.y = self.ey - (near_half - 2.0*near_half*t2)*sc; pn2.z = 0.05
+            pn1 = Point(); pn1.x = rx + (near_half - 2.0*near_half*t1)*ss; pn1.y = ry - (near_half - 2.0*near_half*t1)*sc; pn1.z = 0.05
+            pn2 = Point(); pn2.x = rx + (near_half - 2.0*near_half*t2)*ss; pn2.y = ry - (near_half - 2.0*near_half*t2)*sc; pn2.z = 0.05
             a1 = cone_yaw - half_rad + 2.0*half_rad*t1; a2 = cone_yaw - half_rad + 2.0*half_rad*t2
-            pf1 = Point(); pf1.x = self.ex + radius*math.cos(a1); pf1.y = self.ey + radius*math.sin(a1); pf1.z = 0.05
-            pf2 = Point(); pf2.x = self.ex + radius*math.cos(a2); pf2.y = self.ey + radius*math.sin(a2); pf2.z = 0.05
+            pf1 = Point(); pf1.x = rx + radius*math.cos(a1); pf1.y = ry + radius*math.sin(a1); pf1.z = 0.05
+            pf2 = Point(); pf2.x = rx + radius*math.cos(a2); pf2.y = ry + radius*math.sin(a2); pf2.z = 0.05
             m.points += [pn1, pf1, pf2, pn1, pf2, pn2]
         return m
 
@@ -795,12 +796,13 @@ class LocalPlanning(Node):
         stop_dist = 2.5
         cone_yaw  = self._cone_yaw()
         half_rad  = math.radians(self._CONE_HALF_DEG_WIDE)
+        rx, ry = self._ego_ref()
         N = 20
         for i in range(N + 1):
             a = cone_yaw - half_rad + 2.0 * half_rad * (i / N)
             p = Point()
-            p.x = self.ex + stop_dist * math.cos(a)
-            p.y = self.ey + stop_dist * math.sin(a)
+            p.x = rx + stop_dist * math.cos(a)
+            p.y = ry + stop_dist * math.sin(a)
             p.z = 0.08
             m.points.append(p)
         return m
@@ -1035,15 +1037,15 @@ class LocalPlanning(Node):
         if gap <= 2.5:
             return 0.0
 
-        if gap <= 3.0:
-            return float(self.vx_max * 0.2)
+        if gap <= 4.0:
+            return float(self.vx_max * 0.1)
 
         if gap >= desired_gap:
             return self.vx_max
 
         if not quadratic:
-            # Zone 1: 7m~5.5m → 0.9, 5.5m~3.7m → 0.75
-            return float(self.vx_max * (0.9 if gap > 5.5 else 0.75))
+            # Zone 1: 8m~6.5m → 0.9, 6.5m~5m → 0.7
+            return float(self.vx_max * (0.9 if gap > 6.5 else 0.7))
         else:
             # Zone 2: 3.5m~3.0m → 0.5, 3.0m 이내 → 정지
             return float(self.vx_max * 0.5)
@@ -1072,7 +1074,7 @@ class LocalPlanning(Node):
                 else:
                     self._v_cap_smooth = (self._v_cap_alpha * v_cap
                                           + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
-                kappa_sc = 1.4 if not self._in_zone2() else 0.9
+                kappa_sc = 2.0 if not self._in_zone2() else 1.8
                 return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False, kappa_scale=kappa_sc), 'trailing'
 
         self._v_cap_smooth = None
