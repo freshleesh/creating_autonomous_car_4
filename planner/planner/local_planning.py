@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-#로컬플래닝 0606
+#로컬플래닝
 
 """
 local_planning.py - Standalone mode-selectable local planner.
@@ -46,7 +46,7 @@ from f110_msgs.msg import Wpnt, WpntArray
 
 
 # ===========================================================================
-#  PERCEPTION - Geometry helpers  (provided)
+#  PERCEPTION - Geometry helpers 
 # ===========================================================================
 
 def quaternion_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
@@ -66,6 +66,8 @@ def scan_to_xy(ranges: np.ndarray, angle_min: float, angle_inc: float):
     x = np.where(valid, ranges * np.cos(angles), np.nan)
     y = np.where(valid, ranges * np.sin(angles), np.nan)
     return x, y
+ 
+
  
 # ===========================================================================
 #  PERCEPTION  (Using your code from perception_assignment.py)
@@ -127,12 +129,6 @@ def cluster(x: np.ndarray, y: np.ndarray, angle_inc: float):
         clusters.append(current)
 
     return clusters
-
-
-
-
-
-
 
 
 
@@ -296,19 +292,6 @@ def tracking(obstacles, track, dt: float, ego, max_misses: int = 15):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ===========================================================================
 #  GEOMETRY HELPER (provided)
 # ===========================================================================
@@ -457,12 +440,12 @@ class LocalPlanning(Node):
         self.mode_pub   = self.create_publisher(String,      '/local_planning/mode', 1)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
-        self._BOX_LEN        = 6.0              # [m] 콘 반경
+        self._BOX_LEN        = 7.0              # [m] 콘 반경
         self._CONE_HALF_DEG  = 15.0             # [deg] 콘 반각 (총 30°)
         self._FAR_CONE_LOOKAHEAD = 0.55         # [m] 긴 콘 yaw 최대 추가 룩어헤드
         # 트리거 콘 2 (Zone 2): 넓고 가까이 — 강한 속도 제어 트리거
-        self._BOX_LEN_WIDE       = 3.7          # [m] 넓은 콘 반경
-        self._CONE_HALF_DEG_WIDE = 30.0         # [deg] 넓은 콘 반각 (총 60°)
+        self._BOX_LEN_WIDE       = 3.5          # [m] 넓은 콘 반경
+        self._CONE_HALF_DEG_WIDE = 25.0         # [deg] 넓은 콘 반각 (총 50°)
         self._MIN_HITS       = 3                # trailing 발동 최소 연속 감지 횟수
         self._yaw_rate       = 0.0              # [rad/s] odom angular.z
 
@@ -789,12 +772,38 @@ class LocalPlanning(Node):
         if in_box:
             c_far  = (1.0, 1.0, 0.0, 0.35)
             c_near = (1.0, 1.0, 0.0, 0.35)
+            c_stop = (1.0, 1.0, 0.0, 1.0)
         else:
             c_far  = (0.2, 1.0, 0.2, 0.22)
             c_near = (0.2, 1.0, 0.2, 0.22)
+            c_stop = (0.2, 1.0, 0.2, 0.8)
         m_far  = self._make_cone_marker(200, self._CONE_HALF_DEG,      self._BOX_LEN,      self._cone_yaw_far(), c_far,  near_half=0.25)
         m_near = self._make_cone_marker(201, self._CONE_HALF_DEG_WIDE, self._BOX_LEN_WIDE, self._cone_yaw(),     c_near, near_half=0.25)
-        return [m_far, m_near]
+        m_stop = self._make_stop_line_marker(202, c_stop)
+        return [m_far, m_near, m_stop]
+
+    def _make_stop_line_marker(self, mid: int, color: tuple) -> Marker:
+        """정지 경계선: 2.0m 위치에 Zone2 각도 범위로 호선."""
+        m = Marker()
+        m.header.frame_id = 'map'
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.ns = 'stop_line'; m.id = mid
+        m.type = Marker.LINE_STRIP; m.action = Marker.ADD
+        m.pose.orientation.w = 1.0
+        m.scale.x = 0.05
+        m.color.r, m.color.g, m.color.b, m.color.a = color
+        stop_dist = 2.5
+        cone_yaw  = self._cone_yaw()
+        half_rad  = math.radians(self._CONE_HALF_DEG_WIDE)
+        N = 20
+        for i in range(N + 1):
+            a = cone_yaw - half_rad + 2.0 * half_rad * (i / N)
+            p = Point()
+            p.x = self.ex + stop_dist * math.cos(a)
+            p.y = self.ey + stop_dist * math.sin(a)
+            p.z = 0.08
+            m.points.append(p)
+        return m
 
     def _tracking_markers(self) -> list:
         markers = []
@@ -1023,18 +1032,21 @@ class LocalPlanning(Node):
         if gap <= 0.0 or gap > self.trailing_detect_range:
             return self.vx_max
 
-        if gap <= 2.0:
+        if gap <= 2.5:
             return 0.0
+
+        if gap <= 3.0:
+            return float(self.vx_max * 0.2)
 
         if gap >= desired_gap:
             return self.vx_max
 
         if not quadratic:
-            # Zone 1: 6m~5m → 0.9, 5m 이하 → 0.75
-            return float(self.vx_max * (0.9 if gap > 5.0 else 0.75))
+            # Zone 1: 7m~5.5m → 0.9, 5.5m~3.7m → 0.75
+            return float(self.vx_max * (0.9 if gap > 5.5 else 0.75))
         else:
-            # Zone 2: 3.7m~3.0m → 0.5, 3.0m 이내 → 0.2
-            return float(self.vx_max * (0.5 if gap > 3.0 else 0.2))
+            # Zone 2: 3.5m~3.0m → 0.5, 3.0m 이내 → 정지
+            return float(self.vx_max * 0.5)
 
     def _build_trailing(self):
         """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
@@ -1060,7 +1072,7 @@ class LocalPlanning(Node):
                 else:
                     self._v_cap_smooth = (self._v_cap_alpha * v_cap
                                           + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
-                kappa_sc = 1.2 if not self._in_zone2() else 0.9
+                kappa_sc = 1.4 if not self._in_zone2() else 0.9
                 return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False, kappa_scale=kappa_sc), 'trailing'
 
         self._v_cap_smooth = None
@@ -1077,7 +1089,7 @@ class LocalPlanning(Node):
     # Visualization
     # ================================================================== #
     def _local_wp_markers(self, wpnts, mode) -> list:
-        if mode == 'spline_avoid':ㅁ
+        if mode == 'spline_avoid': 
             color, width = (1.0, 0.0, 0.0), 0.12
         elif mode == 'trailing':
             color, width = (1.0, 1.0, 0.0), 0.08
