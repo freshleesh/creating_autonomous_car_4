@@ -41,6 +41,7 @@ from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
+from std_msgs.msg import String
 from f110_msgs.msg import Wpnt, WpntArray
 
 
@@ -305,50 +306,6 @@ def tracking(obstacles, track, dt: float, ego, max_misses: int = 15):
 
 
 
-def trailing(track, ego, ego_v) -> float:
-    """Speed command from the MAP-frame opponent track + ego pose & speed.
-
-    `track` = (state[x,y,vx,vy], P, misses, hits) in the MAP frame, or None.
-    `ego`   = (ex, ey, eyaw) ;  `ego_v` = ego forward speed [m/s].
-    True PD on the gap: kp on the gap error, kd on the *closing* speed.
-    """
-    # --- tunable parameters ---
-    base_speed   = 8.0    # [m/s] free-running race speed
-    desired_gap  = 0.6    # [m] gap to hold behind the opponent
-    detect_range  = 3.0    # [m] start reacting within this distance
-    kp            = 8.0    # P gain on the gap error
-    kd            = 3.0    # D gain on the closing speed
-    max_speed     = 8.0    # [m/s] absolute speed cap
-    full_stop      = 0.2   # [m] 이 거리 이내 → 완전 정지
-    emergency_stop = 0.5   # [m] 이 거리 이내 → 최저 속도로
-
-    # 1. No opponent in view -> race at full speed.
-    if track is None:
-        return base_speed
-
-    ox, oy, ovx, ovy = track[0]
-    ex, ey, eyaw = ego
-
-    # 2. Project the opponent's position and velocity onto the ego heading.
-    c, s = math.cos(eyaw), math.sin(eyaw)
-    opp_dist =  c * (ox - ex) + s * (oy - ey)   # forward gap [m]
-    opp_vx   =  c * ovx       + s * ovy         # opp. forward speed [m/s]
-    closing  =  opp_vx - ego_v                  # d(gap)/dt; >0 = pulling away
-
-    # 3. Opponent behind us or out of detect range -> race at full speed.
-    if opp_dist < 0.0 or opp_dist > detect_range:
-        return base_speed
-
-    # 4. 50cm 이내 → 최저 속도, 20cm 이내 → 완전 정지
-    if opp_dist <= full_stop:
-        return 0.0
-    if opp_dist <= emergency_stop:
-        return 0.5
-
-    # 5. Classic PD anchored at base_speed.
-    speed = base_speed + kp * (opp_dist - desired_gap) + kd * closing
-    speed = max(0.0, min(speed, base_speed, max_speed))
-    return speed
 
 
 
@@ -425,19 +382,8 @@ class LocalPlanning(Node):
         # ---- avoidance shape ------------------------------------------------
         self.s_hold = float(gp('s_hold', 1.5))  # [m] 가까운 구간 경로 유지 거리
 
-        # ---- trailing PID ---------------------------------------------------
-        # Zone 1: 큰 부채꼴 (4m/20°) — 멀리서 부드럽게 추종
-        self.desired_gap_1         = float(gp('desired_gap_1',         1.83))  # [m] BOX_LEN_WIDE(1.8) + 0.03
-        self.trail_kp_1            = float(gp('trail_kp_1',            0.08))
-        self.trail_kd_1            = float(gp('trail_kd_1',            0.02))
-        # Zone 2: 작은 부채꼴 (2m/30°) — 가까이서 강하게 속도 제어
-        self.desired_gap_2         = float(gp('desired_gap_2',         0.2))   # [m]
-        self.trail_kp_2            = float(gp('trail_kp_2',            1.5))
-        self.trail_kd_2            = float(gp('trail_kd_2',            0.3))
-        # 공통
+        # ---- trailing -------------------------------------------------------
         self.trailing_detect_range = float(gp('trailing_detect_range', 8.0))   # [m]
-        self.trail_ki              = float(gp('trail_ki',              0.2))
-        self.trail_int_max         = float(gp('trail_int_max',         1.5))   # [m/s] anti-windup
 
         # ---- Frenet state ---------------------------------------------------
         self._sx = None
@@ -486,9 +432,7 @@ class LocalPlanning(Node):
         self.ego_s = 0.0
         self.ego_d = 0.0
 
-        # ---- trailing PID state ---------------------------------------------
-        self._trail_integral = 0.0
-        self._trail_prev_err = 0.0
+        # ---- trailing state -------------------------------------------------
         self._dt             = 0.05   # scan callback dt [s]
         self._v_cap_smooth   = None   # 속도 스무딩 (저역통과 필터)
         self._v_cap_alpha    = 0.3    # 스무딩 계수: 낮을수록 부드러움 (0=고정, 1=필터없음)
@@ -496,7 +440,6 @@ class LocalPlanning(Node):
         # ---- avoidance commit (hysteresis) ----------------------------------
         # Hold the same spline until ego passes s_d (raceline rejoin point).
         self._avoid_state = None
-        self._avoid_committed_time = None   # 정적 회피 시작 시각 (3초 hold)
 
         # ---- ROS interfaces -------------------------------------------------
         latched = QoSProfile(depth=1,
@@ -510,6 +453,8 @@ class LocalPlanning(Node):
         self.viz_pub    = self.create_publisher(MarkerArray, '/local_planning/viz', 10)
         self.cand_pub   = self.create_publisher(MarkerArray, '/local_planning/candidates', 5)
         self.det_pub    = self.create_publisher(MarkerArray, '/local_planning/detections', 5)
+        self.track_pub  = self.create_publisher(MarkerArray, '/local_planning/tracking', 10)
+        self.mode_pub   = self.create_publisher(String,      '/local_planning/mode', 1)
 
         # 트리거 콘 1 (Zone 1): 좁고 멀리 — trailing 시작 트리거
         self._BOX_LEN        = 6.0              # [m] 콘 반경
@@ -713,6 +658,7 @@ class LocalPlanning(Node):
 
         self.local_pub.publish(out)
         self._publish_viz(out, used_mode)
+        self.mode_pub.publish(String(data=used_mode))
 
     def _publish_detection_markers(self, obstacles):
         ma = MarkerArray()
@@ -979,7 +925,7 @@ class LocalPlanning(Node):
         return max(2, int(self.local_horizon / self.ds_step) + 1)
 
     def _make_local_wpnts(self, target_fn, v_cap=None, use_curvature_cap=False,
-                          vx_scale=1.0, use_blend=True):
+                          vx_scale=1.0, use_blend=True, kappa_scale=1.0):
         """Unified builder: target d(s) + (optional) ego cosine blend + vx.
 
         With use_blend=True (default, raceline/trailing):
@@ -1047,22 +993,13 @@ class LocalPlanning(Node):
             w.x_m         = float(xs[k])
             w.y_m         = float(ys[k])
             w.psi_rad     = float(psi)
-            w.kappa_radpm = float(kp)
+            w.kappa_radpm = float(kp * kappa_scale)
             w.vx_mps      = float(vx[k])
             w.ax_mps2     = 0.0
             w.d_right     = 0.0
             w.d_left      = 0.0
             out.wpnts.append(w)
         return out
-
-    def _avoid_d_at(self, s, st):
-        """Evaluate the committed avoidance cubic spline at s (wrap-safe)."""
-        s_abs = st['ego_s_init'] + (s - st['ego_s_init']) % self.s_total
-        if s_abs <= st['ego_s_init']:
-            return st['ego_d_init']
-        if s_abs >= st['s_d']:
-            return 0.0
-        return float(st['cs'](s_abs))
 
     def _build_passthrough(self):
         """Raceline (d_target = 0) published as-is (no ego blend).
@@ -1075,39 +1012,29 @@ class LocalPlanning(Node):
         return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False)
 
     def _trailing_speed(self, desired_gap: float, quadratic: bool = False) -> float:
-        """장애물 속도 + 거리 오차 P제어로 일정 거리 추종. 2m 이하 완전 정지."""
+        """Zone1: vx_max×0.9, Zone2: vx_max×0.7, 2m 이하 정지."""
         if self.track is None:
             return self.vx_max
 
-        state = self.track[0]
-        ox, oy   = float(state[0]), float(state[1])
-        ovx, ovy = float(state[2]), float(state[3])
-        c, s = math.cos(self.eyaw), math.sin(self.eyaw)
-        gap = c * (ox - self.ex) + s * (oy - self.ey)
-        opp_v_fwd = c * ovx + s * ovy  # 장애물 전방 속도
+        ox, oy = float(self.track[0][0]), float(self.track[0][1])
+        c, s   = math.cos(self.eyaw), math.sin(self.eyaw)
+        gap    = c * (ox - self.ex) + s * (oy - self.ey)
 
         if gap <= 0.0 or gap > self.trailing_detect_range:
             return self.vx_max
 
-        stop_dist = 2.0
-        if gap <= stop_dist:
+        if gap <= 2.0:
             return 0.0
 
         if gap >= desired_gap:
             return self.vx_max
 
-        target_gap = 3.0   # [m] 목표 추종 거리
-
-        # 2.0m 이하 → 완전 정지
-        if gap <= 2.0:
-            return 0.0
-
         if not quadratic:
-            # Zone 1 (6m / ±15°): vx_max × 0.9
-            return float(self.vx_max * 0.9)
+            # Zone 1: 6m~5m → 0.9, 5m 이하 → 0.75
+            return float(self.vx_max * (0.9 if gap > 5.0 else 0.75))
         else:
-            # Zone 2 (3.7m / ±30°): vx_max × 0.7
-            return float(self.vx_max * 0.7)
+            # Zone 2: 3.7m~3.0m → 0.5, 3.0m 이내 → 0.2
+            return float(self.vx_max * (0.5 if gap > 3.0 else 0.2))
 
     def _build_trailing(self):
         """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
@@ -1120,33 +1047,24 @@ class LocalPlanning(Node):
                 else:
                     # Zone 1 only (±15°): 선형×0.9 — 완만한 감속, 추종 유지
                     v_cap = self._trailing_speed(self._BOX_LEN, quadratic=False)
-                restart_misses = 3
+                restart_misses = 5
                 # 정지 중 + N프레임 이상 미감지 → 장애물 소멸 판단, 재출발
                 if v_cap == 0.0 and misses >= restart_misses:
                     self._v_cap_smooth = None
                     return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False), 'free'
-                # 단방향 저역통과 필터: 감속 시 완만, 가속 시 즉시, 정지 명령 시 즉시 0
+                # 양방향 저역통과 필터: 감속·가속 모두 부드럽게, 정지 명령만 즉시 0
                 if self._v_cap_smooth is None:
                     self._v_cap_smooth = self.vx_max
                 if v_cap == 0.0:
                     self._v_cap_smooth = 0.0  # 정지 명령은 즉시 반영
-                elif v_cap < self._v_cap_smooth:
+                else:
                     self._v_cap_smooth = (self._v_cap_alpha * v_cap
                                           + (1.0 - self._v_cap_alpha) * self._v_cap_smooth)
-                else:
-                    self._v_cap_smooth = v_cap
-                return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False), 'trailing'
+                kappa_sc = 1.2 if not self._in_zone2() else 0.9
+                return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False, kappa_scale=kappa_sc), 'trailing'
 
         self._v_cap_smooth = None
         return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False), 'free'
-
-    def _build_from_avoid_state(self, st):
-        """Publish the committed avoidance spline as-is (no ego blend)."""
-        return self._make_local_wpnts(
-            target_fn=lambda s: self._avoid_d_at(s, st),
-            use_curvature_cap=True,
-            vx_scale=self.vx_scale_avoid,
-            use_blend=False)
 
     def _build_spline_avoid_or_fallback(self):
         """트리거 존 내 장애물 → trailing PID (경로 변경 없음). 밖이면 free."""
@@ -1156,122 +1074,10 @@ class LocalPlanning(Node):
         return self._build_trailing()
 
     # ================================================================== #
-    # Avoidance state + feasibility
-    # ================================================================== #
-    def _make_avoidance_state(self, s_obs_rel, d_avoid, label, d_obs=0.0):
-        """3-ctrl cubic spline, then push samples out of obstacle + clamp to
-        walls + PCHIP refit.
-
-        ctrl points: (ego_s_init, ego_d_init), (s_obs_rel, d_avoid),
-                     (s_obs_rel + s_out, 0).
-        s_d = last ctrl = commit termination check point.
-
-        Post-processing (clamp_to_walls):
-          1. dense-sample the raw cubic over [ego_s_init, s_d]
-          2. push d laterally so |d - d_obs| >= sqrt(safety^2 - (s - s_obs)^2)
-             on the side selected by sign(d_avoid)        (obstacle clearance)
-          3. clamp each d into [-dr(s)+margin+buffer, dl(s)-margin-buffer]
-             (wall clearance — final, so walls win over obstacle push if they
-             collide; _evaluate_state then catches that as infeasible)
-          4. refit with PCHIP (shape-preserving, no overshoot)
-        """
-        ego_s_init = float(self.ego_s)
-        ego_d_init = float(self.ego_d)
-        s_d = s_obs_rel + self.s_out
-
-        # s_hold 구간 동안 현재 d 유지 → 가까운 구간 경로 변화 없음
-        s_hold_end = ego_s_init + self.s_hold
-        if s_obs_rel - s_hold_end > 0.5:
-            s_ctrl = np.array([ego_s_init, s_hold_end, s_obs_rel, s_d], dtype=float)
-            d_ctrl = np.array([ego_d_init, ego_d_init, float(d_avoid), 0.0], dtype=float)
-        else:
-            s_ctrl = np.array([ego_s_init, s_obs_rel, s_d], dtype=float)
-            d_ctrl = np.array([ego_d_init, float(d_avoid), 0.0], dtype=float)
-        if not np.all(np.diff(s_ctrl) > 1e-3):
-            return None
-        cs_raw = CubicSpline(s_ctrl, d_ctrl, bc_type='natural')
-
-        if self.clamp_to_walls:
-            n_clamp = 40
-            s_seq = np.linspace(ego_s_init, s_d, n_clamp)
-            d_seq = np.asarray(cs_raw(s_seq), dtype=float)
-            inset  = self.margin + self.clamp_buffer
-            safety = self.obs_radius + self.margin
-            side = 1.0 if d_avoid > 0 else -1.0
-            for i, s in enumerate(s_seq):
-                d = d_seq[i]
-                # 1) push outward of obstacle within its s-influence band
-                ds_obs = s - s_obs_rel
-                if abs(ds_obs) < safety:
-                    lat_needed = math.sqrt(safety * safety - ds_obs * ds_obs)
-                    target = d_obs + side * lat_needed
-                    if side > 0:
-                        d = max(d, target)
-                    else:
-                        d = min(d, target)
-                # 2) wall clamp (final authority)
-                dl =  self._dl_at(s) - inset
-                dr = -self._dr_at(s) + inset
-                if dl < dr:                       # corridor narrower than 2*inset
-                    d = 0.5 * (dl + dr)
-                else:
-                    d = min(max(d, dr), dl)
-                d_seq[i] = d
-            cs = PchipInterpolator(s_seq, d_seq, extrapolate=False)
-        else:
-            cs = cs_raw
-
-        return {
-            'label':       label,
-            'd_avoid':     float(d_avoid),
-            's_d':         float(s_d),
-            'ego_s_init':  ego_s_init,
-            'ego_d_init':  ego_d_init,
-            'cs':          cs,
-        }
-
-    def _sample_state_full(self, st, n=60):
-        """Dense sampling over [ego_s_init, s_d] for feasibility & viz."""
-        s_seq = np.linspace(st['ego_s_init'], st['s_d'], n)
-        d_seq = np.array([self._avoid_d_at(s, st) for s in s_seq])
-        return s_seq, d_seq
-
-    def _evaluate_state(self, st, obs_x, obs_y):
-        """Wall + obstacle feasibility + cost. Returns cost or None (infeasible)."""
-        s_seq, d_seq = self._sample_state_full(st)
-        # 1) track width (both walls + margin)
-        for s, d in zip(s_seq, d_seq):
-            dl = self._dl_at(s) - self.margin
-            dr = -self._dr_at(s) + self.margin
-            if d > dl or d < dr:
-                return None
-        # 2) Cartesian 변환 + PNG 벽 20cm 근접 체크
-        xs = np.empty_like(s_seq)
-        ys = np.empty_like(s_seq)
-        for k, (s, d) in enumerate(zip(s_seq, d_seq)):
-            xs[k], ys[k] = self.to_cartesian(s, d)
-            if self._wall_mask_med is not None:
-                col = int((xs[k] - self._wall_ox) / self._wall_res)
-                row = int(self._wall_h - 1 - (ys[k] - self._wall_oy) / self._wall_res)
-                if (0 <= row < self._wall_h and 0 <= col < self._wall_w
-                        and self._wall_mask_med[row, col]):
-                    return None  # PNG 벽 15cm 이내 → infeasible
-        # 3) min distance to obstacle (must clear inflated safety distance)
-        obs_dist = float(np.min(np.hypot(xs - obs_x, ys - obs_y)))
-        safety = self.obs_radius + self.margin
-        if obs_dist < safety:
-            return None
-        # 4) cost: 1/clearance + mean |d|
-        w_obs    = 5.0
-        w_offset = 1.0
-        return (w_obs / max(obs_dist - safety, 0.05)
-                + w_offset * float(np.mean(np.abs(d_seq))))
-
-    # ================================================================== #
     # Visualization
     # ================================================================== #
     def _local_wp_markers(self, wpnts, mode) -> list:
-        if mode == 'spline_avoid':
+        if mode == 'spline_avoid':ㅁ
             color, width = (1.0, 0.0, 0.0), 0.12
         elif mode == 'trailing':
             color, width = (1.0, 1.0, 0.0), 0.08
@@ -1292,13 +1098,23 @@ class LocalPlanning(Node):
 
     def _publish_viz(self, wpnts, mode):
         """trigger_zone + tracking + local_waypoints 를 하나의 MarkerArray로 발행."""
+        tracking_markers = self._tracking_markers()
+
+        # 기존 통합 viz
         ma = MarkerArray()
         clear = Marker(); clear.action = Marker.DELETEALL
         ma.markers.append(clear)
         ma.markers += self._trigger_zone_markers()
-        ma.markers += self._tracking_markers()
+        ma.markers += tracking_markers
         ma.markers += self._local_wp_markers(wpnts, mode)
         self.viz_pub.publish(ma)
+
+        # tracking 마커만 별도 토픽으로 발행
+        tm = MarkerArray()
+        tc = Marker(); tc.action = Marker.DELETEALL
+        tm.markers.append(tc)
+        tm.markers += tracking_markers
+        self.track_pub.publish(tm)
 
     def _clear_candidates(self):
         """Publish DELETEALL to wipe leftover candidate markers."""
@@ -1307,45 +1123,6 @@ class LocalPlanning(Node):
         ma.markers.append(clear)
         self.cand_pub.publish(ma)
 
-    def _publish_candidates(self, results):
-        """Visualize [{'state': st, 'cost': float|None}, ...]."""
-        ma = MarkerArray()
-        clear = Marker(); clear.action = Marker.DELETEALL
-        ma.markers.append(clear)
-        feasible = [r for r in results if r['cost'] is not None]
-        best_cost = min((r['cost'] for r in feasible), default=None)
-        stamp = self.get_clock().now().to_msg()
-        for i, r in enumerate(results):
-            m = Marker()
-            m.header.frame_id = 'map'
-            m.header.stamp = stamp
-            m.ns = 'avoid_candidates'
-            m.id = i
-            m.type = Marker.LINE_STRIP
-            m.action = Marker.ADD
-            if r['cost'] is None:
-                # infeasible
-                m.scale.x = 0.03
-                m.color.r, m.color.g, m.color.b, m.color.a = 0.7, 0.0, 0.0, 0.4
-            elif best_cost is not None and r['cost'] == best_cost:
-                # best
-                m.scale.x = 0.08
-                m.color.r, m.color.g, m.color.b, m.color.a = 1.0, 0.5, 0.0, 0.95
-            else:
-                # feasible but not best
-                m.scale.x = 0.03
-                m.color.r, m.color.g, m.color.b, m.color.a = 0.55, 0.55, 0.55, 0.6
-            s_seq, d_seq = self._sample_state_full(r['state'])
-            for s, d in zip(s_seq, d_seq):
-                x, y = self.to_cartesian(s, d)
-                p = Point(); p.x, p.y, p.z = float(x), float(y), 0.07
-                m.points.append(p)
-            # lifetime=0 -> persist in RViz until explicit DELETEALL.
-            # We only clear when ego passes s_d (avoidance complete).
-            m.lifetime.sec = 0
-            m.lifetime.nanosec = 0
-            ma.markers.append(m)
-        self.cand_pub.publish(ma)
 
 
 def main(args=None):
