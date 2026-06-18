@@ -7,7 +7,7 @@
     pp_speed_boost:    1.0     # PP straight boost OFF — straight speed managed only in trajectory (v_max)
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
-    pp_v_max_boost:    11.5    # [v21] 13.0→25.0 [user]: PP 직선속도 캡 사실상 해제(>v_max=23).
+    pp_v_max_boost:    12.00    # [v21] 13.0→25.0 [user]: PP 직선속도 캡 사실상 해제(>v_max=23).
                                #   이제 PP는 직선속도를 안 자름 → 차는 프로파일 v_max=23 / VESC erpm
                                #   캡까지 달림. 진짜 천장 = VESC speed_max=140000 erpm = 140000/7382.4
                                #   ≈ 18.96 m/s planned ≈ 실제 11.8 m/s. 더 올리려면 v_max 또는
