@@ -20,6 +20,7 @@ Pipeline:
         4. publish WpntArray
     /local_waypoints                                              OUTPUT
 
+    
 Run:
     /usr/bin/python3 local_planning.py --ros-args -p mode:=spline_avoid
 """
@@ -477,7 +478,7 @@ class LocalPlanning(Node):
             return
         wall = arr < 90
         n_sm  = max(1, int(math.ceil(0.10 / self._wall_res)))   # 10cm — 스캔 포인트 필터
-        n_md  = max(1, int(math.ceil(0.20 / self._wall_res)))   # 20cm — obstacle 중심점 필터
+        n_md  = max(1, int(math.ceil(0.25 / self._wall_res)))   # 25cm — obstacle 중심점 필터
         n_lg  = max(1, int(math.ceil(0.30 / self._wall_res)))   # 30cm — track kill / 회피 경로
         self._wall_mask       = binary_dilation(wall, structure=np.ones((2*n_sm+1, 2*n_sm+1), dtype=bool))
         self._wall_mask_med   = binary_dilation(wall, structure=np.ones((2*n_md+1, 2*n_md+1), dtype=bool))
@@ -1037,7 +1038,6 @@ class LocalPlanning(Node):
         return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False)
 
     def _trailing_speed(self, desired_gap: float, quadratic: bool = False) -> float:
-        """Zone1: vx_max×0.9, Zone2: vx_max×0.7, 2m 이하 정지."""
         if self.track is None:
             return self.vx_max
 
@@ -1054,15 +1054,16 @@ class LocalPlanning(Node):
         if gap <= 4.0:
             return float(self.vx_max * 0.1)
 
-        if gap >= desired_gap:
-            return self.vx_max
-
-        if not quadratic:
-            # Zone 1: 8m~6.5m → 0.9, 6.5m~5m → 0.7
-            return float(self.vx_max * (0.9 if gap > 6.5 else 0.7))
-        else:
-            # Zone 2: 3.5m~3.0m → 0.5, 3.0m 이내 → 정지
+        if gap <= 5.0:
             return float(self.vx_max * 0.5)
+
+        if gap <= 6.0:
+            return float(self.vx_max * 0.7)
+
+        if gap <= 6.5:
+            return float(self.vx_max * 0.9)
+
+        return self.vx_max
 
     def _build_trailing(self):
         """Zone2: 즉시 정지 후 0.5s 미감지 시 재출발. Zone1: 선형 감속."""
