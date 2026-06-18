@@ -42,6 +42,8 @@ vesc/**:
     speed_min: -140000.0
     speed_to_erpm_gain: 7382.4
     speed_to_erpm_offset: 0.0
-    steering_angle_to_servo_gain: -1.2 #-1.2135
-    steering_angle_to_servo_offset: 0.634
+    # 실측 캘리(2026-06-18): 원주행 3점 회귀 servo=-0.897*δ+0.650 (RMS 0.003, 선형/좌우대칭).
+    #   이전 -1.2 는 ~40% 과조향이었음(명령 0.25 → 실제 0.35rad). 이전값: gain -1.2, offset 0.634.
+    steering_angle_to_servo_gain: -0.90    # was -1.2 (#-1.2135)
+    steering_angle_to_servo_offset: 0.65   # was 0.634
     use_servo_cmd_to_calc_angular_velocity: true

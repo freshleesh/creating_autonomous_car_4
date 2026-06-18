@@ -7,7 +7,7 @@
     pp_speed_boost:    1.0     # PP straight boost OFF — straight speed managed only in trajectory (v_max)
     pp_clear_dist:     3.0     # obstacle-free distance to trigger boost [m]
     pp_straight_kappa: 0.1     # max |kappa| to consider straight [rad/m]
-    pp_v_max_boost:    12.0    # [v21] 13.0→25.0 [user]: PP 직선속도 캡 사실상 해제(>v_max=23).
+    pp_v_max_boost:    25.0    # [v21] 13.0→25.0 [user]: PP 직선속도 캡 사실상 해제(>v_max=23).
                                #   이제 PP는 직선속도를 안 자름 → 차는 프로파일 v_max=23 / VESC erpm
                                #   캡까지 달림. 진짜 천장 = VESC speed_max=140000 erpm = 140000/7382.4
                                #   ≈ 18.96 m/s planned ≈ 실제 11.8 m/s. 더 올리려면 v_max 또는
@@ -21,17 +21,17 @@
     #   "follow the line loosely" behaviour. We accept a larger cross-track error
     #   in exchange for no weaving.
     # Speed-adaptive lookahead: L_f = clip(gain * v / (1 + cte_gain*|CTE|), min, max)
-    pp_lookahead_gain: 0.40    # [best 19.64s] 0.65→0.60 복원: 전반적 룩어헤드 게인.
+    pp_lookahead_gain: 0.60    # [best 19.64s] 0.65→0.60 복원: 전반적 룩어헤드 게인.
                                # [v18] 0.65→0.60 복귀: gain은 곡률 무관 속도항이라 완만+중코너를
                                #   둘 다 늘림 → 중코너 복귀 요청에 따라 원복. 완만곡선은 max(아래)만으로 유지.
-    pp_lookahead_min:  1.0     # [v29 user] 1.0->0.8: 헤어핀 언더스티어(바깥밀림) 해결 - 저속 급커브 턴인 타이트하게. 진동/못따라가면 0.9.
+    pp_lookahead_min:  1.0     # [best 19.64s] 0.8→1.0 복원: 급커브 바닥 룩어헤드.
                                # [v19] 1.0→0.8 [user]: 중코너·급커브 룩어헤드를 더 짧게(타이트 추종).
                                #   주의: min은 floor에 "닿는" 구간(주로 급커브·저속)만 줄임. 중코너는
                                #   보통 floor 위라 kappa_lookahead_gain↑와 같이 가야 실제로 줄어듦.
                                #   [v11] 0.7→1.0 올렸던 이유: 너무 짧은 코너 룩어헤드 + 제어 latency =
                                #   진동/라인 못따라감(sim 확인: short-LA CTE~1 m, long-LA~0.15 m).
                                #   0.8은 그 절충 — 코너에서 진동/못따라가면 0.9~1.0으로 되돌릴 것.
-    pp_lookahead_max:  2.0     # [best 19.64s] 6.0→5.0 복원: 직선 룩어헤드 천장.
+    pp_lookahead_max:  3.0     # [best 19.64s] 6.0→5.0 복원: 직선 룩어헤드 천장.
                                # [v23] 10.0→5.0 [user] 되돌림: 직선·빠른 완만 룩어헤드 천장 다시 5.0.
                                #   v≥8.33 planned이면 여기 걸림(0.60·8.33=5.0).
                                #   (v22에서 10.0까지 늘렸던 걸 원복)
@@ -56,7 +56,7 @@
     #   levels AND steering got smoother. 0.15 is the robust pick — 0.20+ over-
     #   steers/oscillates when the car does NOT understeer. Raise toward 0.2 only if
     #   it still drifts wide; lower if it weaves on a well-gripping day.
-    pp_K_heading:      0.15     # [v26 user] 0.05->0.12: 고속 언더스티어(바깥밀림) 보정 강화. 위빙/진동이면 0.08로.
+    pp_K_heading:      0.12     # [v26 user] 0.05->0.12: 고속 언더스티어(바깥밀림) 보정 강화. 위빙/진동이면 0.08로.
     # [v9] Understeer / predictive feedforward (delta += gain*v^2*kappa).
     #   ENABLED at a tiny 0.002 as an experiment. ⚠️ In closed-loop sim this term
     #   is grip-SENSITIVE: with good grip / little understeer it OVER-steers into
@@ -64,14 +64,14 @@
     #   when the car genuinely understeers. So treat as experimental: if the car
     #   starts cutting corners or twitching, set this back to 0.0. The heading
     #   feedback above already gives most of the anticipation more safely.
-    pp_us_ff_gain:     0.0012   # [v27 user] 0.002->0.004: 언더스티어 FF 강화 delta+=g*v^2*kappa. 코너컷/진동이면 0.002로.
+    pp_us_ff_gain:     0.002   # [v26 user] 0.0->0.002 ON: 언더스티어 FF delta+=g*v^2*kappa (고속코너 안쪽보정). 코너컷/진동이면 0.0.
                              # [user] 안쪽 보정 약하게 ON: delta += gain * v^2 * kappa.
                                #   고속+급커브일수록 안쪽으로 더 조향(언더스티어 상쇄). 진동/코너컷 생기면
                                #   0.008 → 0.0 로 낮출 것. (이전엔 0.0=OFF, 고속코너 불안정 원인이었음)
     # [user] Corner-ENTRY 안쪽 보정. 곡률이 "갑자기" 커지는 진입 구간에서만 작동
     #   (빠른 직선 → 코너). 관성 언더스티어로 바깥으로 튕기는 그 지점에만 미세 안쪽 조향.
     #   정상 코너 중/탈출에는 0 (us_ff와 달리 정상 코너를 안 건드림).
-    pp_entry_ff_gain:       0.04   # [v29 user] 0.02->0.04 (v28 되돌림): 진입 안쪽보정 복원. 헤어핀 더 밀리면 0.05~0.06.
+    pp_entry_ff_gain:       0.00   # 0.0=OFF. 안쪽 보정 게인. 더 넣으려면 0.04~0.06, 코너컷/진동이면 낮춤
     pp_entry_ff_preview_n:  10     # 몇 웨이포인트 앞 곡률로 "급증"을 판정 (진입 거리)
     pp_entry_ff_dkappa_min: 0.15   # [1/m] 이만큼 |κ|가 올라야 "갑자기 심해짐"으로 간주 (작을수록 민감)
     pp_entry_ff_v_min:      3.0    # [m/s] 이 속도 이상에서만 작동 (느리면 언더스티어 없음)

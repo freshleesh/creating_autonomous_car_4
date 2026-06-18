@@ -651,7 +651,7 @@ class TrajectoryOptimizer(Node):
         # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
         # no longer re-caps corner speed; the trajectory profile IS the limit now.
         cap_mild   = 1.55       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
-        cap_sharp  = 1.50       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4  # [v27 user] 1.40->1.55: 헤어핀/sharp코너 속도 +11%(완만 cap_mild는 불변). 코너서 밀리면 낮춤.
+        cap_sharp  = 1.55       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4  # [v27 user] 1.40->1.55: 헤어핀/sharp코너 속도 +11%(완만 cap_mild는 불변). 코너서 밀리면 낮춤.
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp

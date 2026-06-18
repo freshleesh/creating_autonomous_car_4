@@ -1,57 +1,101 @@
 mppi:
   ros__parameters:
-    # Control loop
+    # ===== 제어 루프 =====
+    # 컨트롤러가 1초에 몇 번 명령을 새로 계산/발행하는지 [Hz].
+    # 높을수록 반응 빠름. 단, CPU에서 도는 JAX 연산이 이 주기를 못 따라가면
+    # 명령이 밀려서 오히려 불안정해짐 → 실제 루프 Hz가 유지되는지 로그로 확인.
     control_rate_hz:    50.0
 
-    # Rollout shape (changing these triggers a JAX recompile on next launch)
-    n_samples:           8192
-    n_steps:             10
+    # ===== 롤아웃(예측) 형상 — 이 값들을 바꾸면 다음 실행 때 JAX 재컴파일됨 =====
+    # n_samples: 매 스텝 무작위로 뿌리는 후보 궤적(샘플) 개수.
+    #   많을수록 더 좋은 해를 찾지만 연산량 비례 증가(CPU라 특히 민감).
+    n_samples:           2048
+    # n_steps: 한 번에 몇 스텝 앞까지 예측할지(예측 구간 길이).
+    # sim_time_step: 한 예측 스텝의 시간 간격 [s].
+    #   ▶ 실제 예측 호라이즌 = n_steps × sim_time_step = 60 × 0.05 = 3.0초
+    #   호라이즌이 짧으면 코너(특히 헤어핀)를 늦게 "봐서" 제때 감속을 못함.
+    #   헤어핀에서 벽으로 나가면 이 둘을 키워 호라이즌을 ~3.0초로 늘릴 것.
+    n_steps:             60
     sim_time_step:       0.05
+    # n_iterations: 한 제어 주기 안에서 MPPI 최적화를 몇 번 반복할지(보통 1).
     n_iterations:          1
 
-    # Sampling std (in normalized [-1, 1] action space)
+    # ===== 샘플링 표준편차 (정규화된 [-1, 1] 행동 공간 기준) =====
+    # 후보 궤적을 만들 때 조향/가속을 평균(웜스타트) 주변으로 얼마나 넓게 흩뿌릴지.
+    # control_std_steer: 조향(조향속도) 탐색 폭. 키우면 더 과감한 조향까지 탐색.
+    # control_std_accel: 가/감속 탐색 폭. 키우면 더 센 제동/가속까지 탐색.
     control_std_steer:   0.9
     control_std_accel:   1.0
 
-    # Half-range scales: normalized 1.0 → this many physical units
+    # ===== 정규화 스케일: 정규화값 1.0 이 실제 물리량으로 얼마인지 =====
+    # steer_vel_scale: 정규화 1.0 = 조향각속도 3.2 rad/s (조향이 변하는 최대 속도).
+    # accel_scale:     정규화 1.0 = 가속도 9.51 m/s^2 (구동/제동 한계).
     steer_vel_scale:     3.2   # rad/s
     accel_scale:         9.51  # m/s^2
 
-    # Reference picking from /global_waypoints
+    # ===== 레퍼런스(추종 목표점) 선택 — /global_waypoints 기준 =====
+    # use_waypoint_speed: true면 웨이포인트에 저장된 최적 속도를 목표속도로 사용.
+    #                     false면 아래 ref_speed 고정값 사용.
     use_waypoint_speed:  true
+    # ref_speed: 웨이포인트 속도가 0이거나 use_waypoint_speed=false일 때 쓰는 기본 목표속도 [m/s].
     ref_speed:           2.0
+    # ref_speed_scale: 목표속도 전체에 곱하는 배율(1.0=그대로). 전체적으로 빠르게/느리게 할 때.
     ref_speed_scale:     1.0
-    # Reference points are spaced by the car's ACTUAL speed (floored), not the
-    # speed target — so they don't get thrown ahead around corners (cut-in fix).
+    # ref_pos_speed_floor: 레퍼런스 점 간격을 "차의 실제 속도"로 잡되, 이 값 미만으로는
+    #   내려가지 않도록 하는 하한 [m/s]. 정지 상태에서도 목표점이 앞으로 생겨 출발 가능.
+    #   (목표점을 목표속도가 아닌 실제속도로 배치 → 코너에서 앞으로 안 던져져 코너 컷인 방지)
     ref_pos_speed_floor: 1.0   # m/s
-    # Single grip knob: cap corner speed so v^2*|kappa| <= max_lat_accel.
-    # Lower if the car slides in corners; 0 disables. (dry grip ~ mu*g ~ 10.3)
-    max_lat_accel:       4.0   # m/s^2
+    # max_lat_accel: 코너 속도 상한을 정하는 "그립 손잡이" — v^2*|곡률| <= max_lat_accel 이 되도록
+    #   곡률 큰 구간의 목표속도를 sqrt(max_lat_accel/곡률)로 깎음. 0이면 비활성.
+    #   ▶ 낮출수록 코너에서 더 느리게/더 일찍 감속. 코너에서 미끄러지거나 벽 나가면 낮출 것.
+    #   (마른 노면 그립 한계 ~ mu*g ~ 10.3)
+    max_lat_accel:       1.0   # m/s^2
 
-    # Cost weights — xy error split into path-frame contour/lag (see _step_reward).
-    # contour = off-line (perpendicular) error: keep HIGH → stays on the line.
-    # lag = along-path error: keep LOW → progress without corner-cutting.
-    contour_weight:      1.5
-    lag_weight:          0.3
-    velocity_weight:     0.5
-    yaw_weight:          0.5
+    # ===== 비용 가중치 — XY 오차를 경로 기준 contour/lag 성분으로 분리 (_step_reward 참고) =====
+    # contour_weight: 경로에 대한 "수직(라인 이탈)" 오차 가중치. 높게 유지 → 라인 위에 붙어 있음.
+    #   ※ 현재 코드엔 벽/경계 비용이 없어서, 차를 트랙 안에 잡아두는 건 사실상 이 항뿐임.
+    contour_weight:      1.0
+    # lag_weight: 경로를 따라가는 "진행 방향" 오차 가중치. 낮게 유지 → 코너 컷인 없이 전진.
+    lag_weight:          0.5
+    # velocity_weight: 목표속도 추종 가중치. 키우면 코너 속도 상한(max_lat_accel)을
+    #   실제로 지키며 제동함. 0이면 속도 목표를 거의 무시(=감속 안 해서 과속 진입).
+    velocity_weight:     1.0
+    # yaw_weight: 차체 방향(heading)을 경로 접선에 맞추는 가중치. 키우면 헤어핀에서
+    #   직진 관성 대신 차체를 더 적극적으로 돌림.
+    yaw_weight:          1.0
 
-    # MPPI hyperparameters
+    # ===== MPPI 하이퍼파라미터 =====
+    # temperature: 후보 궤적 가중평균의 "온도". 낮으면 최고점 샘플에 탐욕적으로 수렴,
+    #   높으면 여러 샘플을 부드럽게 평균(지역최소 탈출에 유리하나 해가 뭉개질 수 있음).
     temperature:         0.08
+    # damping: 가중치 정규화 분모에 더하는 안정화 항(0에 가까운 작은 값). 보통 건드리지 않음.
     damping:             0.001
 
-    # Output clamps
-    max_steering_angle:  0.4
-    min_speed:           0.0
+    # ===== 출력 클램프(최종 명령 제한) =====
+    # max_steering_angle: 발행 조향각 한계 [rad]. 0.39 rad ≈ 22.3도.
+    #   실측 캘리(gain -0.90/offset 0.65) 기준 오른쪽 servo가 1.0에 살짝 포화되는
+    #   지점이 약 0.39rad → 양쪽 포화 없이 쓸 수 있는 상한으로 0.39 설정. was 0.4.
+    #   최소 회전반경 = wheelbase/tan(0.39) ≈ 0.81m.
+    max_steering_angle:  0.39
+    # min_speed / max_speed: 발행 속도 명령의 하한/상한 [m/s].
+    min_speed:           0.2
     max_speed:           10.0
 
-    # Detection-based opponent keep-out
-    use_detection:       true
+    # ===== 상대 차량 회피(detection 기반 keep-out) =====
+    # use_detection: 인지(/detections)로 상대 차 회피 비용을 켤지 여부.
+    use_detection:       false
+    # max_obstacles: 비용에 반영할 최대 장애물(상대 차) 개수.
     max_obstacles:         16
+    # obstacle_weight: 장애물 근처를 피하는 비용 가중치(클수록 더 멀리 회피).
     obstacle_weight:    10.0
+    # obstacle_radius: 회피용 가우시안 비용의 반경 [m](클수록 더 일찍/넓게 피함).
     obstacle_radius:     0.05
+    # laser_x_offset: base_link(뒷차축) → laser 의 전방 오프셋 [m].
+    #   laser 좌표계 장애물을 base_link/map 으로 변환할 때 사용(정적 TF와 일치: 0.27).
     laser_x_offset:      0.27
+    # detection_timeout: 이 시간보다 오래된 인지 결과는 무시 [s].
     detection_timeout:   0.5
 
-    # Vehicle
+    # ===== 차량 제원 =====
+    # wheelbase: 앞축~뒷축 거리 [m]. 운동학 자전거 모델의 회전반경/각속도 계산에 쓰임.
     wheelbase:           0.33

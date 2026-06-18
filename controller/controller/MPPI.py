@@ -15,6 +15,7 @@ Pub:
 
 import math
 import os
+import time
 
 # Force JAX onto CPU before importing JAX — the workspace machine ships JAX
 # without CUDA, and we want predictable behavior either way.
@@ -149,6 +150,16 @@ class MPPINode(Node):
         self._last_plan_time = None
         self._shift_accum = 0.0
         self.control_dt = 1.0 / float(p('control_rate_hz'))
+
+        # --- timing instrumentation (summary logged once per second) ---
+        self._t_prev_loop = None       # perf_counter at the previous executed loop
+        self._timing_report_t = None   # perf_counter of the last log emit
+        self._n_cycles = 0
+        self._solve_ms_sum = 0.0
+        self._solve_ms_max = 0.0
+        self._loop_ms_sum = 0.0
+        self._loop_ms_max = 0.0
+        self._period_ms_sum = 0.0
 
         latched = QoSProfile(
             depth=1,
@@ -322,10 +333,64 @@ class MPPINode(Node):
             m.points.append(p)
         pub.publish(m)
 
+    def _report_timing(self, solve_ms, loop_ms, period_ms):
+        """Accumulate per-cycle timing and log a summary once per second.
+
+        solve_ms  : MPPI.update() compute time (block_until_ready'd)
+        loop_ms   : total time spent inside _loop this cycle
+        period_ms : wall-clock gap since the previous executed loop (1/actual rate)
+
+        Warns when the slowest loop in the window exceeds the control-period
+        budget — that's when the timer can't keep up and commands start lagging
+        the freshly-drawn optimal trajectory.
+        """
+        self._n_cycles += 1
+        self._solve_ms_sum += solve_ms
+        self._solve_ms_max = max(self._solve_ms_max, solve_ms)
+        self._loop_ms_sum += loop_ms
+        self._loop_ms_max = max(self._loop_ms_max, loop_ms)
+        self._period_ms_sum += period_ms
+
+        now = time.perf_counter()
+        if self._timing_report_t is None:
+            self._timing_report_t = now
+            return
+        if now - self._timing_report_t < 1.0:
+            return
+
+        n = max(1, self._n_cycles)
+        budget_ms = self.control_dt * 1000.0
+        avg_period = self._period_ms_sum / n
+        actual_hz = 1000.0 / avg_period if avg_period > 1e-6 else 0.0
+        over = self._loop_ms_max > budget_ms
+        msg = (
+            f'[MPPI timing] solve avg/max={self._solve_ms_sum / n:.1f}/{self._solve_ms_max:.1f} ms | '
+            f'loop avg/max={self._loop_ms_sum / n:.1f}/{self._loop_ms_max:.1f} ms | '
+            f'rate={actual_hz:.1f} Hz (target {1.0 / self.control_dt:.0f}) | '
+            f'budget={budget_ms:.1f} ms'
+        )
+        # Keep warn/info on separate call sites: rclpy forbids changing a log
+        # location's severity between calls ("severity cannot be changed").
+        if over:
+            self.get_logger().warn(msg + '  !! OVER BUDGET -> commands lagging the plan')
+        else:
+            self.get_logger().info(msg)
+        self._timing_report_t = now
+        self._n_cycles = 0
+        self._solve_ms_sum = self._solve_ms_max = 0.0
+        self._loop_ms_sum = self._loop_ms_max = 0.0
+        self._period_ms_sum = 0.0
+
     # ------------------------------------------------------------------ loop
     def _loop(self):
         if self.odom is None or self.waypoints is None:
             return
+
+        # --- timing: loop entry + wall-clock period since the last executed loop ---
+        t_loop_start = time.perf_counter()
+        period_ms = ((t_loop_start - self._t_prev_loop) * 1000.0
+                     if self._t_prev_loop is not None else 0.0)
+        self._t_prev_loop = t_loop_start
 
         # Ego state from odom (gym_bridge fills twist with map-frame velocity).
         ex = self.odom.pose.pose.position.x
@@ -369,11 +434,18 @@ class MPPINode(Node):
         n_shift = int(self._shift_accum / self.sim_dt)
         self._shift_accum -= n_shift * self.sim_dt
 
+        t_solve0 = time.perf_counter()
         a_opt, traj_opt = self.mppi.update(
             x0, reference, obstacles, weights,
             temperature=temperature, damping=damping, n_iter=self.n_iterations,
             n_shift=n_shift,
         )
+        # JAX dispatches async; block so the timing reflects the real compute
+        # (the np.array() conversions below would force this anyway). The first
+        # solve includes one-time JIT compilation — expect a large max in the
+        # opening window, then it should settle.
+        jax.block_until_ready((a_opt, traj_opt))
+        solve_ms = (time.perf_counter() - t_solve0) * 1000.0
 
         # First action in normalized units → physical units → next-step state.
         u0_norm = np.array(a_opt[0])
@@ -406,6 +478,10 @@ class MPPINode(Node):
                                      ns='mppi_optimal', rgb=(0.1, 1.0, 0.2), width=0.08)
         self._publish_line_strip(self.ref_pub, reference[:, :2],
                                  ns='mppi_reference', rgb=(0.2, 0.4, 1.0), width=0.06)
+
+        # --- timing: total loop work this cycle + throttled report ---
+        loop_ms = (time.perf_counter() - t_loop_start) * 1000.0
+        self._report_timing(solve_ms, loop_ms, period_ms)
 
 
 def main(args=None):

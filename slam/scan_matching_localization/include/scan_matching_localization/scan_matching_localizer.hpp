@@ -36,6 +36,7 @@
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/utils.h>
@@ -146,6 +147,8 @@ public:
     dynamic_filter_timeout_ = declare_parameter<double>("dynamic_filter_timeout", 0.30);
     dynamic_obstacle_topic_ =
       declare_parameter<std::string>("dynamic_obstacle_topic", "/local_planning/opponent");
+    dynamic_removed_topic_ =
+      declare_parameter<std::string>("dynamic_removed_topic", "/icp/dynamic_removed");
 
     // base_link -> laser extrinsic; replaced by a TF lookup once available.
     laser_x_ = declare_parameter<double>("laser_x", 0.27);
@@ -191,6 +194,8 @@ public:
       opponent_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
         dynamic_obstacle_topic_, 10,
         std::bind(&ScanMatchingLocalizer::opponentCallback, this, std::placeholders::_1));
+      removed_pub_ = create_publisher<visualization_msgs::msg::Marker>(
+        dynamic_removed_topic_, 10);
     }
 
     RCLCPP_INFO(
@@ -428,30 +433,52 @@ private:
   // base frame with the predicted pose. Skips when the detection is missing/stale.
   void filterDynamicPoints(Points & pts, const Pose2D & pred, const rclcpp::Time & scan_t)
   {
-    if (!have_opp_) return;
-    const double age = scan_t.seconds() - opp_t_;
-    if (age < 0.0 || age > dynamic_filter_timeout_) return;   // stale → keep all points
+    // Marker of the points we drop, in the base frame, for RViz. Published every
+    // scan while the filter is enabled (empty when nothing is removed) so the
+    // visualization stays in sync.
+    visualization_msgs::msg::Marker m;
+    m.header.frame_id = base_frame_;
+    m.header.stamp = scan_t;
+    m.ns = "dynamic_removed";
+    m.id = 0;
+    m.type = visualization_msgs::msg::Marker::POINTS;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.scale.x = m.scale.y = 0.06;          // point size [m]
+    m.color.r = 1.0; m.color.g = 0.1; m.color.b = 0.1; m.color.a = 1.0;
 
-    // map -> base: rotate the (opponent - pose) offset by -pred.theta.
-    const double dx = opp_x_ - pred.x, dy = opp_y_ - pred.y;
-    const double ct = std::cos(pred.theta), st = std::sin(pred.theta);
-    const double ox =  ct * dx + st * dy;   // opponent in base frame
-    const double oy = -st * dx + ct * dy;
-    const double r2 = dynamic_filter_radius_ * dynamic_filter_radius_;
+    const bool fresh = have_opp_ &&
+      (scan_t.seconds() - opp_t_) >= 0.0 &&
+      (scan_t.seconds() - opp_t_) <= dynamic_filter_timeout_;
 
-    std::size_t kept = 0;
-    for (const auto & p : pts) {
-      const double ex = p.x() - ox, ey = p.y() - oy;
-      if (ex * ex + ey * ey > r2) pts[kept++] = p;
+    if (fresh) {
+      // map -> base: rotate the (opponent - pose) offset by -pred.theta.
+      const double dx = opp_x_ - pred.x, dy = opp_y_ - pred.y;
+      const double ct = std::cos(pred.theta), st = std::sin(pred.theta);
+      const double ox =  ct * dx + st * dy;   // opponent in base frame
+      const double oy = -st * dx + ct * dy;
+      const double r2 = dynamic_filter_radius_ * dynamic_filter_radius_;
+
+      std::size_t kept = 0;
+      for (const auto & p : pts) {
+        const double ex = p.x() - ox, ey = p.y() - oy;
+        if (ex * ex + ey * ey > r2) {
+          pts[kept++] = p;                  // keep
+        } else {
+          geometry_msgs::msg::Point gp;     // removed → visualize
+          gp.x = p.x(); gp.y = p.y(); gp.z = 0.0;
+          m.points.push_back(gp);
+        }
+      }
+      pts.resize(kept);
+      if (debug_timing_ && !m.points.empty()) {
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "dynamic filter: removed %zu pts around opponent (r=%.2f m)",
+          m.points.size(), dynamic_filter_radius_);
+      }
     }
-    const std::size_t removed = pts.size() - kept;
-    pts.resize(kept);
-    if (debug_timing_ && removed > 0) {
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "dynamic filter: removed %zu pts around opponent (r=%.2f m)",
-        removed, dynamic_filter_radius_);
-    }
+
+    if (removed_pub_) removed_pub_->publish(m);   // empty marker clears RViz when idle
   }
 
   void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg)
@@ -607,6 +634,7 @@ private:
   double dynamic_filter_radius_ = 0.60;
   double dynamic_filter_timeout_ = 0.30;
   std::string dynamic_obstacle_topic_ = "/local_planning/opponent";
+  std::string dynamic_removed_topic_ = "/icp/dynamic_removed";
   double opp_x_ = 0.0, opp_y_ = 0.0;
   double opp_t_ = 0.0;   // detection stamp [s] (clock-type-agnostic)
   bool have_opp_ = false;
@@ -632,6 +660,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initpose_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr opponent_sub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr removed_pub_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

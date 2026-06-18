@@ -46,7 +46,7 @@ icp_localizer:
     # Evaluated at the final pose against a FIXED tight distance, so it reflects
     # match QUALITY (unlike the correspondence count, which stays high even when
     # mislocalized). If the fit fails, the node coasts on the motion prediction.
-    fitness_gate_enable: true
+    fitness_gate_enable: false
     fitness_inlier_dist: 0.05       # [m] scan point counts as inlier if within this of a map point
     fitness_min_inlier_ratio: 0.50  # accept only if >= this fraction of points are inliers
     fitness_max_resid: 0.12         # [m] accept only if RMS inlier residual <= this
@@ -56,9 +56,15 @@ icp_localizer:
     # registration, so a moving car can't bias the scan-to-static-map match.
     # true/false swaps it against the original (unfiltered) localization.
     use_dynamic_filter: true        # false = original behaviour
-    dynamic_filter_radius: 0.60      # [m] drop scan points within this of the opponent
-    dynamic_filter_timeout: 0.30     # [s] ignore detections older than this (then keep all points)
+    dynamic_filter_radius: 0.30      # [m] drop scan points within this of the opponent
+    dynamic_filter_timeout: 0.10     # [s] ignore detections older than this (then keep all points)
     dynamic_obstacle_topic: /local_planning/opponent
+
+    # --- robust loss for the point-to-line GN optimizer ---
+    # Down-weight large-residual correspondences (e.g. dynamic-obstacle returns)
+    # in the scan-to-map optimization. none = plain least squares (original).
+    robust_kernel: cauchy          # none | huber | cauchy | gm
+    robust_scale: 0.15           # [m] kernel width (residual where down-weighting starts)
 
     # --- point-to-line (PL-ICP) variant ---
     use_point_to_plane: true    # true: minimize point-to-line (map-normal) residual instead of point-to-point

@@ -10,6 +10,7 @@
 // The motion model (constant body-frame velocity from /vesc/odom) is handled by
 // the base class, which hands us the predicted pose as the ICP seed.
 #include <algorithm>
+#include <string>
 
 #include "scan_matching_localization/scan_matching_localizer.hpp"
 #include "scan_matching_localization/spatial_grid.hpp"
@@ -35,6 +36,18 @@ public:
     // corr gate). A scan point counts as an inlier only if it lands this close to
     // a map point at the final pose — the honest measure of match quality.
     fitness_inlier_dist_ = declare_parameter<double>("fitness_inlier_dist", 0.10);
+
+    // Robust loss for the point-to-line GN optimizer: down-weight large-residual
+    // correspondences (e.g. a dynamic obstacle's returns) instead of letting them
+    // pull the pose. 'none' = plain least squares (original). huber is gentle,
+    // cauchy/gm aggressively ignore large residuals. robust_scale [m] is the
+    // kernel width (residual at which down-weighting kicks in).
+    const std::string rk = declare_parameter<std::string>("robust_kernel", "none");
+    robust_kernel_ =
+      rk == "huber"  ? K_HUBER  :
+      rk == "cauchy" ? K_CAUCHY :
+      (rk == "gm" || rk == "geman_mcclure") ? K_GM : K_NONE;
+    robust_scale_ = declare_parameter<double>("robust_scale", 0.10);
 
     // Point-to-line (PL-ICP) variant: minimize the residual along the map normal
     // instead of point-to-point. Faster/sharper on walls; falls back to
@@ -191,15 +204,17 @@ protected:
         Eigen::Vector3d jr;            // jr = n^T J  (1x3)
         jr << n.x(), n.y(), -n.x() * dy + n.y() * dx;
         const double e = n.dot(wp - qp);
-        H += jr * jr.transpose();
-        g += jr * e;
+        const double w = robustWeight(std::abs(e));   // M-estimator weight
+        H += w * jr * jr.transpose();
+        g += w * jr * e;
       } else {
         Eigen::Matrix<double, 2, 3> J;
         J << 1.0, 0.0, -dy,
              0.0, 1.0,  dx;
         const Eigen::Vector2d e = wp - qp;
-        H += J.transpose() * J;
-        g += J.transpose() * e;
+        const double w = robustWeight(e.norm());       // M-estimator weight
+        H += w * J.transpose() * J;
+        g += w * J.transpose() * e;
       }
     }
 
@@ -214,7 +229,26 @@ protected:
     return std::hypot(delta(0), delta(1)) < trans_eps_ && std::abs(delta(2)) < rot_eps_;
   }
 
+  // M-estimator weight for a residual r at the configured kernel / scale.
+  // Multiplying each correspondence's normal-equation contribution by this turns
+  // the GN step into iteratively-reweighted least squares (robust to outliers).
+  double robustWeight(double r) const
+  {
+    if (robust_kernel_ == K_NONE || robust_scale_ <= 1e-9) return 1.0;
+    if (robust_kernel_ == K_HUBER) return r <= robust_scale_ ? 1.0 : robust_scale_ / r;
+    const double x = r / robust_scale_;
+    if (robust_kernel_ == K_GM) {           // Geman-McClure: 1/(1+x^2)^2
+      const double d = 1.0 + x * x;
+      return 1.0 / (d * d);
+    }
+    return 1.0 / (1.0 + x * x);             // Cauchy
+  }
+
 private:
+  enum RobustKernel { K_NONE, K_HUBER, K_CAUCHY, K_GM };
+  int robust_kernel_ = K_NONE;
+  double robust_scale_ = 0.10;
+
   NearestGrid grid_;
   double voxel_size_;
   double max_corr_dist_;
