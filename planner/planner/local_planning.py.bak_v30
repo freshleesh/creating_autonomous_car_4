@@ -413,7 +413,6 @@ class LocalPlanning(Node):
         self._dt             = 0.05   # scan callback dt [s]
         self._v_cap_smooth   = None   # 속도 스무딩 (저역통과 필터)
         self._v_cap_alpha    = 0.3    # 스무딩 계수: 낮을수록 부드러움 (0=고정, 1=필터없음)
-        self._v_cap_release_alpha = float(gp('v_cap_release_alpha', 0.1))  # [user] trailing 해제 시 글로벌 속도로 복귀하는 램프 계수 (낮을수록 천천히 가속)
 
         # ---- avoidance commit (hysteresis) ----------------------------------
         # Hold the same spline until ego passes s_d (raceline rejoin point).
@@ -1091,18 +1090,6 @@ class LocalPlanning(Node):
                 kappa_sc = 2.0 if not self._in_zone2() else 1.8
                 return self._make_local_wpnts(target_fn=lambda s: 0.0, v_cap=self._v_cap_smooth, use_blend=False, kappa_scale=kappa_sc), 'trailing'
 
-        # ---- 장애물 소멸/존 이탈 → 글로벌 속도로 '점진' 복귀 (급가속 방지) ----
-        #   [user] 기존엔 여기서 v_cap을 즉시 None으로 버려 글로벌 raceline 속도로 점프
-        #   → 갑자기 빨라져 불안정. 움직이며 trailing하던 캡(_v_cap_smooth)을 vx_max까지
-        #   저역통과로 천천히 올린 뒤 해제. 완전정지(≈0)였던 경우는 PP startup_cap이
-        #   출발을 관리하므로 램프를 건너뛰고 즉시 해제.
-        if (self._v_cap_smooth is not None
-                and self._v_cap_smooth > 0.5
-                and self._v_cap_smooth < self.vx_max * 0.97):
-            self._v_cap_smooth = (self._v_cap_release_alpha * self.vx_max
-                                  + (1.0 - self._v_cap_release_alpha) * self._v_cap_smooth)
-            return self._make_local_wpnts(target_fn=lambda s: 0.0,
-                                          v_cap=self._v_cap_smooth, use_blend=False), 'trailing'
         self._v_cap_smooth = None
         return self._make_local_wpnts(target_fn=lambda s: 0.0, use_blend=False), 'free'
 

@@ -621,13 +621,13 @@ class TrajectoryOptimizer(Node):
         #       smoothly through the corner.
         v_top      = v_max
         a_accel    = 25.80 * a_long_max          # [revert v10→v8.1] gentler accel out of corners (0.85 carried too much speed)
-        a_brake    = 3.80 * a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
+        a_brake    = 5.80 * a_long_max          # lowered 1.5→1.2: slightly longer/gentler braking zone (∝1/a_brake)
                                                 #   but physical: braking-zone length = Δv²/(2·a_brake), so a
                                                 #   LOWER a_brake stretches the slow-down EARLIER. The car
                                                 #   "brakes too early" precisely because a_brake was low. A
                                                 #   higher a_brake = short, late slow-down held near the corner.
                                                 #   (Trade: the braking itself is firmer — opposite of "gentler".)
-        hold_dist  = 0.2                       # [revert v10→v8.1] small post-corner hold restored:
+        hold_dist  = 0.4                       # [revert v10→v8.1] small post-corner hold restored:
                                                 #     a touch of corner-speed hold past the apex = gentler
                                                 #     exit, less over-speed into the next section.
 
@@ -650,8 +650,8 @@ class TrajectoryOptimizer(Node):
         # hard cap exactly: vx_cap = √(a_lat_max/κ)·cap_factor → √(15/κ) when
         # cap_factor=1.0. The old 2.0–3.0 "grip-headroom bonus" is gone because PP
         # no longer re-caps corner speed; the trajectory profile IS the limit now.
-        cap_mild   = 1.55       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
-        cap_sharp  = 1.50       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4  # [v27 user] 1.40->1.55: 헤어핀/sharp코너 속도 +11%(완만 cap_mild는 불변). 코너서 밀리면 낮춤.
+        cap_mild   = 1.53       # gentle-corner grip-headroom bonus (×√(a_lat/κ)). raised 1.4→1.6
+        cap_sharp  = 1.53       # sharp-corner bonus (smaller; tight corners stay closer to physics). 1.2→1.4  # [v27 user] 1.40->1.55: 헤어핀/sharp코너 속도 +11%(완만 cap_mild는 불변). 코너서 밀리면 낮춤.
         KAPPA_HARD = 1.50       # [1/m] |κ| at/above which we treat a corner as "severe"
         t_sharp = np.clip(np.abs(kappa) / KAPPA_HARD, 0.0, 1.0)   # 0 mild .. 1 sharp
         cap_factor = cap_mild + (cap_sharp - cap_mild) * t_sharp
